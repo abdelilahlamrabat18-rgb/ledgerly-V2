@@ -1,0 +1,12 @@
+import { useState } from 'react';
+import { Link, useNavigate } from 'react-router-dom';
+import { AuthLayout } from './AuthLayout';
+import { useAuth } from '../../context/AuthContext';
+import { useToast } from '../../context/ToastContext';
+
+export function SignupPage() {
+  const { signUp, isConfigured, isDemo } = useAuth(); const navigate = useNavigate(); const { toast } = useToast();
+  const [name, setName] = useState(''); const [email, setEmail] = useState(''); const [password, setPassword] = useState(''); const [loading, setLoading] = useState(false); const [error, setError] = useState('');
+  async function submit(event: React.FormEvent) { event.preventDefault(); setError(''); if (password.length < 8) { setError('Use at least 8 characters for your password.'); return; } setLoading(true); const result = await signUp(name, email, password); setLoading(false); if (result.error) setError(result.error.message); else { toast(result.needsConfirmation ? 'Check your inbox to confirm your email.' : 'Your workspace is ready.'); navigate(result.needsConfirmation ? '/login' : '/app', { replace: true }); } }
+  return <AuthLayout title="Create your workspace" eyebrow="Start with the essentials"><p className="auth-subtitle">A clearer way to run your business. It takes less than a minute to get started.</p>{!isConfigured && !isDemo && <div className="setup-callout">Supabase is not configured yet. Add the values from <strong>.env.example</strong> to enable real account creation.</div>}{error && <div className="inline-error">{error}</div>}<form className="auth-form" onSubmit={submit}><label className="auth-label">Your name<input className="form-input" required value={name} onChange={(e) => setName(e.target.value)} placeholder="Your name" /></label><label className="auth-label">Email address<input className="form-input" type="email" autoComplete="email" required value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@company.com" /></label><label className="auth-label">Create a password<input className="form-input" type="password" autoComplete="new-password" minLength={8} required value={password} onChange={(e) => setPassword(e.target.value)} placeholder="At least 8 characters" /></label><button className="button button-primary" disabled={loading || (!isConfigured && !isDemo)}>{loading ? 'Creating workspace…' : 'Create free account'}</button></form><p className="auth-switch">Already have an account? <Link className="text-link" to="/login">Sign in</Link></p></AuthLayout>;
+}

@@ -1,0 +1,1 @@
+export function LoadingState({ label = 'Loading your workspace…' }: { label?: string }) { return <div className="empty-state"><div className="spinner" style={{ margin: '0 auto 13px' }} /><p style={{ color: '#8490a1', margin: 0, fontSize: 12 }}>{label}</p></div>; }

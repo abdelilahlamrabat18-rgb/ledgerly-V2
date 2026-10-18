@@ -1,0 +1,10 @@
+project_id = "ledgerly"
+
+[functions.google-oauth-start]
+verify_jwt = true
+
+[functions.google-oauth-callback]
+verify_jwt = false
+
+[functions.google-sheets]
+verify_jwt = true
