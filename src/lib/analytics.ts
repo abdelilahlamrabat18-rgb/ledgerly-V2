@@ -40,3 +40,43 @@ export function parseRecordDate(value: string | null | undefined): Date | null {
     return null;
   }
 }
+
+export interface InvoiceMetricsSummary {
+  totalInvoiced: number;
+  paidRevenue: number;
+  outstanding: number;
+  openInvoices: number;
+  cancelledInvoices: number;
+  paidInvoices: number;
+  invalidAmountCount: number;
+}
+
+export function summariseInvoiceMetrics(invoices: Invoice[]): InvoiceMetricsSummary {
+  let totalInvoiced = 0;
+  let paidRevenue = 0;
+  let outstanding = 0;
+  let openInvoices = 0;
+  let cancelledInvoices = 0;
+  let paidInvoices = 0;
+  let invalidAmountCount = 0;
+
+  for (const invoice of invoices ?? []) {
+    const amount = Number(invoice?.amount);
+    if (!Number.isFinite(amount) || amount < 0) {
+      invalidAmountCount += 1;
+      continue;
+    }
+    totalInvoiced += amount;
+    if (invoice.status === 'paid') {
+      paidRevenue += amount;
+      paidInvoices += 1;
+    } else if (invoice.status === 'cancelled') {
+      cancelledInvoices += 1;
+    } else {
+      outstanding += amount;
+      openInvoices += 1;
+    }
+  }
+
+  return { totalInvoiced, paidRevenue, outstanding, openInvoices, cancelledInvoices, paidInvoices, invalidAmountCount };
+}
