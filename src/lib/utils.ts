@@ -25,3 +25,19 @@ export function toNumber(value: FormDataEntryValue | null) {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : 0;
 }
+
+export function validateAmount(value: string | null | undefined) {
+  if (value === null || value === undefined) return null;
+  const trimmed = value.trim();
+  if (trimmed === '') return null;
+  const parsed = Number(trimmed);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+}
+
+export function validateQuantity(value: string | null | undefined) {
+  if (value === null || value === undefined) return null;
+  const trimmed = value.trim();
+  if (trimmed === '') return null;
+  const parsed = Number(trimmed);
+  return Number.isFinite(parsed) && parsed >= 1 ? parsed : null;
+}
