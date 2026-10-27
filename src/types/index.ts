@@ -93,6 +93,37 @@ export interface SpreadsheetTab {
 
 export type EntityName = 'clients' | 'invoices' | 'expenses' | 'orders';
 
+export type SubscriptionEntitlement =
+  | 'trialing'
+  | 'active'
+  | 'past_due'
+  | 'cancelled'
+  | 'expired'
+  | 'unpaid'
+  | 'no_provider';
+
+export interface Subscription {
+  id: string;
+  user_id: string;
+  entitlement: SubscriptionEntitlement;
+  provider: string;
+  provider_subscription_id: string | null;
+  provider_customer_id: string | null;
+  provider_order_id: string | null;
+  plan: string;
+  plan_price_cents: number;
+  currency: string;
+  trial_start: string | null;
+  trial_end: string | null;
+  current_period_start: string | null;
+  current_period_end: string | null;
+  cancelled_at: string | null;
+  paid_through: string | null;
+  provider_status: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface MappingField {
   key: string;
   label: string;

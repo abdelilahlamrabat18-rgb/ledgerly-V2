@@ -1,6 +1,7 @@
 import { Activity, ArrowLeftRight, BarChart3, BriefcaseBusiness, FileSpreadsheet, FileText, LayoutDashboard, LogOut, Package, Receipt, Settings, X } from 'lucide-react';
 import { NavLink } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
+import { useBilling } from '../../context/BillingContext';
 import { useToast } from '../../context/ToastContext';
 import { initials } from '../../lib/utils';
 
@@ -17,6 +18,7 @@ const navItems = [
 
 export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void }) {
   const { user, signOut, isDemo, displayName } = useAuth();
+  const { trialActive, isPaid } = useBilling();
   const { toast } = useToast();
   const name = isDemo ? 'Demo workspace' : displayName;
   async function handleSignOut() {
@@ -31,9 +33,9 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
       {navItems.map(({ to, label, icon: Icon, end }) => <NavLink key={to} to={to} end={end} className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`} onClick={onClose}><Icon /><span>{label}</span></NavLink>)}
     </nav>
     <p className="nav-label" style={{ marginTop: 30 }}>Account</p>
-    <nav className="nav-list"><NavLink to="/app/settings" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`} onClick={onClose}><Settings /><span>Settings</span></NavLink></nav>
+    <nav className="nav-list"><NavLink to="/app/billing" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`} onClick={onClose}><Receipt /><span>Billing</span></NavLink><NavLink to="/app/settings" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`} onClick={onClose}><Settings /><span>Settings</span></NavLink></nav>
     <div className="sidebar-bottom">
-      <div className="connection-mini"><span className="connection-dot" /><span>{isDemo ? 'Demo data enabled' : 'Workspace secure'}</span></div>
+      <div className="connection-mini"><span className="connection-dot" /><span>{isDemo ? 'Demo data enabled' : isPaid ? 'Active subscription' : trialActive ? 'Trial active' : 'Workspace secure'}</span></div>
       <div className="sidebar-user"><span className="avatar">{initials(name)}</span><div style={{ minWidth: 0, flex: 1 }}><strong>{name}</strong><span>{isDemo ? 'Preview workspace' : user?.email || 'Account'}</span></div><button className="icon-button" onClick={() => { void handleSignOut(); }} aria-label="Sign out"><LogOut size={15} /></button></div>
     </div>
   </aside>;

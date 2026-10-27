@@ -1,4 +1,4 @@
-import type { Client, Expense, GoogleConnection, Invoice, Order, Profile } from './index';
+import type { Client, Expense, GoogleConnection, Invoice, Order, Profile, Subscription } from './index';
 
 export type TableRow = {
   profiles: Profile;
@@ -7,6 +7,7 @@ export type TableRow = {
   expenses: Expense;
   orders: Order;
   google_connections: GoogleConnection;
+  subscriptions: Subscription;
 };
 
 export type Database = {
