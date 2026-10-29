@@ -124,6 +124,44 @@ function mapRecord(target: Target, userId: string, headers: string[], row: strin
   return { ...common, product, quantity: Math.max(1, Math.floor(quantity)), total, status: validStatus.includes(status) ? status : 'pending', order_date: parseDate(get('order_date')), notes: get('notes') || null };
 }
 
+/**
+ * Evaluates the caller's billing entitlement from the server-authoritative
+ * subscriptions row. Mirrors the policy in src/lib/billing.ts so the Edge
+ * Function can decide independently of the browser.
+ */
+function evaluateEntitlement(record: { entitlement?: string | null; trial_end?: string | null; current_period_end?: string | null; paid_through?: string | null } | null): string {
+  if (!record || !record.entitlement) return 'no_provider';
+  const now = Date.now();
+  const remaining = (iso: string | null | undefined) => {
+    if (!iso) return null;
+    const parsed = Date.parse(iso);
+    return Number.isFinite(parsed) ? parsed - now : null;
+  };
+  switch (record.entitlement) {
+    case 'trialing': {
+      const trialEnd = remaining(record.trial_end);
+      return trialEnd === null ? 'expired' : trialEnd > 0 ? 'trialing' : 'expired';
+    }
+    case 'active':
+      return 'active';
+    case 'past_due': {
+      const paidThrough = remaining(record.paid_through);
+      if (paidThrough !== null && paidThrough > 0) return 'past_due';
+      const periodEnd = remaining(record.current_period_end);
+      if (periodEnd !== null && periodEnd > 0) return 'past_due';
+      return 'unpaid';
+    }
+    case 'cancelled': {
+      const paidThrough = remaining(record.paid_through);
+      return paidThrough !== null && paidThrough > 0 ? 'cancelled' : 'expired';
+    }
+    default:
+      return record.entitlement;
+  }
+}
+
+const CORE_ENTITLEMENTS = new Set(['trialing', 'active', 'past_due']);
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders });
   if (req.method !== 'POST') return json({ error: 'Use POST for Google Sheets actions.' }, 405);
@@ -146,6 +184,42 @@ Deno.serve(async (req) => {
     const admin = createClient(supabaseUrl, serviceRoleKey);
     const body = await req.json().catch(() => null) as Record<string, unknown> | null;
     if (!body || typeof body.action !== 'string') return json({ error: 'Choose a valid Google Sheets action.' }, 400);
+
+    /**
+     * Server-side entitlement check.
+     *
+     * Runs with the service-role client so it bypasses RLS, but the check is
+     * still enforced here: the service role is not allowed to skip it. The
+     * user ID is derived from the verified session above and never trusted
+     * from client input. Fails closed — a lookup error or missing billing
+     * state denies access rather than defaulting to allow.
+     *
+     * 'disconnect' is intentionally NOT gated: it is an account-management
+     * action that must remain available after trial expiry.
+     */
+    if (body.action !== 'disconnect') {
+      const { data: billingRow, error: billingError } = await admin
+        .from('subscriptions')
+        .select('entitlement, trial_end, current_period_end, paid_through')
+        .eq('user_id', user.id)
+        .maybeSingle();
+
+      if (billingError) {
+        console.error('[google-sheets] entitlement lookup failed:', billingError.message);
+        return json({ error: 'We could not verify your subscription. Please try again.' }, 503);
+      }
+
+      const entitlement = evaluateEntitlement(
+        billingRow as { entitlement?: string | null; trial_end?: string | null; current_period_end?: string | null; paid_through?: string | null } | null,
+      );
+
+      if (!CORE_ENTITLEMENTS.has(entitlement)) {
+        return json(
+          { error: 'Your trial has expired or your subscription is not active. Visit Billing to continue using Google Sheets.' },
+          403,
+        );
+      }
+    }
 
     if (body.action === 'disconnect') {
       const { error: secretDeleteError } = await admin.from('google_connection_secrets').delete().eq('user_id', user.id);

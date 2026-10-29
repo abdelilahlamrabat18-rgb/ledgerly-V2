@@ -27,6 +27,31 @@ export interface BillingRecord {
   paid_through?: string | null;
 }
 
+/**
+ * Safe read-only projection returned to the browser by the billing-state
+ * Edge Function. Provider identifiers and internal mutation fields are
+ * deliberately excluded.
+ */
+export interface BillingTrial {
+  userId: string;
+  entitlement: Entitlement;
+  plan: string;
+  planPriceCents: number;
+  currency: string;
+  trialStart: string | null;
+  trialEnd: string | null;
+  currentPeriodEnd: string | null;
+  paidThrough: string | null;
+  provider: string;
+  created?: boolean;
+}
+
+export interface BillingState {
+  ok: boolean;
+  trial: BillingTrial | null;
+  error?: string;
+}
+
 const NOW = (): number => Date.now();
 
 /**
@@ -52,7 +77,7 @@ function msUntil(iso: string | null | undefined): number | null {
  * confirmed is still paid for.
  */
 export function evaluateEntitlement(record: BillingRecord | null | undefined): Entitlement {
-  if (!record) return 'no_provider';
+  if (!record || !record.entitlement) return 'no_provider';
 
   const current = record.entitlement;
 

@@ -53,7 +53,7 @@ alter table public.subscriptions enable row level security;
 
 -- Read-only projection for authenticated users: never exposes provider IDs
 -- or internal entitlement fields that could be used to spoof access.
--- Must only return data for the caller's own user id and must verify auth.uid().
+-- SECURITY DEFINER with a fixed search_path prevents search_path injection.
 create or replace function public.subscription_safe_view(p_user_id uuid)
 returns table (
   user_id uuid,
@@ -66,8 +66,7 @@ returns table (
   current_period_end timestamptz,
   paid_through timestamptz,
   provider text
-) language sql security definer
-set search_path = public, pg_temp as $$
+) language sql security definer set search_path = public, pg_temp as $$
   select
     s.user_id,
     s.entitlement,
@@ -80,22 +79,30 @@ set search_path = public, pg_temp as $$
     s.paid_through,
     s.provider
   from public.subscriptions s
-  where s.user_id = p_user_id
-    and auth.uid() is not null
+  where auth.uid() is not null
     and auth.uid() = p_user_id
   limit 1;
 $$;
 
--- Authenticated users may read their own safe projection only via this function
--- with authorization enforced inside the function. Revoke from anon/public
--- and keep authenticated access only under strict checks.
+-- Authenticated users may read their own safe projection only.
+create policy "subscriptions_select_own_safe" on public.subscriptions
+  for select using (
+    auth.uid() = user_id
+    and entitlement in ('trialing', 'active', 'past_due', 'cancelled', 'expired', 'unpaid', 'no_provider')
+  );
+
+-- No authenticated INSERT/UPDATE/DELETE policy exists on purpose.
+-- All authoritative mutations go through service-role Edge Functions.
+revoke all on public.subscriptions from anon;
+revoke all on public.subscriptions from authenticated;
 revoke all on function public.subscription_safe_view(uuid) from public;
 revoke all on function public.subscription_safe_view(uuid) from anon;
 grant execute on function public.subscription_safe_view(uuid) to authenticated;
+revoke all on function public.subscription_safe_view from public, anon;
 
 -- Server-authoritative trial creation. Runs as SECURITY DEFINER so an
 -- authenticated user cannot supply arbitrary timestamps or user IDs.
--- Concurrency-safe: use atomic upsert that cannot reset an existing trial.
+-- ON CONFLICT DO NOTHING guarantees the trial starts exactly once per user.
 create or replace function public.start_trial_if_missing(p_user_id uuid, p_trial_days integer default 14)
 returns table (
   user_id uuid,
@@ -103,13 +110,11 @@ returns table (
   trial_start timestamptz,
   trial_end timestamptz,
   created boolean
-) language plpgsql security definer
-set search_path = public, pg_temp as $$
+) language plpgsql security definer set search_path = public, pg_temp as $$
 declare
   v_trial_start timestamptz;
   v_trial_end timestamptz;
-  v_created boolean := false;
-  v_row public.subscriptions%rowtype;
+  v_existing boolean;
 begin
   if p_user_id is null then
     raise exception 'A valid user id is required.';
@@ -118,43 +123,40 @@ begin
     p_trial_days := 14;
   end if;
 
-  v_trial_start := now();
-  v_trial_end := v_trial_start + (p_trial_days || ' days')::interval;
+  select exists (
+    select 1 from public.subscriptions where user_id = p_user_id
+  ) into v_existing;
 
-  -- Atomic insert only if missing; do not update existing rows to avoid
-  -- resetting or extending an existing trial.
-  insert into public.subscriptions (user_id, entitlement, trial_start, trial_end, provider)
-  values (p_user_id, 'trialing', v_trial_start, v_trial_end, 'lemonsqueezy')
-  on conflict (user_id) do nothing
-  returning * into v_row;
-
-  if found then
-    v_created := true;
+  if v_existing then
     return query
-    select v_row.user_id, v_row.entitlement, v_row.trial_start, v_row.trial_end, v_created;
+    select s.user_id, s.entitlement, s.trial_start, s.trial_end, false
+    from public.subscriptions s
+    where s.user_id = p_user_id
+    limit 1;
     return;
   end if;
 
-  -- Row already exists; return it without modification.
-  select * into v_row
-  from public.subscriptions
-  where subscriptions.user_id = p_user_id;
+  v_trial_start := now();
+  v_trial_end := now() + (p_trial_days || ' days')::interval;
+
+  insert into public.subscriptions (user_id, entitlement, trial_start, trial_end, provider)
+  values (p_user_id, 'trialing', v_trial_start, v_trial_end, 'leonsqueezy')
+  on conflict (user_id) do nothing;
 
   return query
-  select v_row.user_id, v_row.entitlement, v_row.trial_start, v_row.trial_end, false;
-  return;
+  select s.user_id, s.entitlement, s.trial_start, s.trial_end, true
+  from public.subscriptions s
+  where s.user_id = p_user_id
+  limit 1;
 end;
 $$;
 
--- Keep timestamps server controlled. set_updated_at() is defined in initial schema
--- and is SECURITY INVOKER (safe). Ensure trigger exists.
-drop trigger if exists subscriptions_set_updated_at on public.subscriptions;
-create trigger subscriptions_set_updated_at before update on public.subscriptions
-  for each row execute procedure public.set_updated_at();
-
--- Explicitly revoke execution of start_trial_if_missing from PUBLIC, anon, authenticated.
--- Grant execution only to service_role (used by Edge Functions).
 revoke all on function public.start_trial_if_missing(uuid, integer) from public;
 revoke all on function public.start_trial_if_missing(uuid, integer) from anon;
 revoke all on function public.start_trial_if_missing(uuid, integer) from authenticated;
 grant execute on function public.start_trial_if_missing(uuid, integer) to service_role;
+
+-- Keep timestamps server controlled.
+drop trigger if exists subscriptions_set_updated_at on public.subscriptions;
+create trigger subscriptions_set_updated_at before update on public.subscriptions
+  for each row execute procedure public.set_updated_at();
