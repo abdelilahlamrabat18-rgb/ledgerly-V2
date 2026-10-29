@@ -78,9 +78,9 @@ describe('evaluateEntitlement', () => {
 });
 
 describe('hasCoreAccess', () => {
-  it('grants access to trialing, active, and past_due only', () => {
-    const granted: Entitlement[] = ['trialing', 'active', 'past_due'];
-    const denied: Entitlement[] = ['cancelled', 'expired', 'unpaid', 'no_provider'];
+  it('permits navigation for trialing, active, and no_provider', () => {
+    const granted: Array<Entitlement | string> = ['trialing', 'active', 'no_provider'];
+    const denied: Array<Entitlement | string> = ['past_due', 'cancelled', 'expired', 'unpaid'];
     granted.forEach((state) => expect(hasCoreAccess(state)).toBe(true));
     denied.forEach((state) => expect(hasCoreAccess(state)).toBe(false));
   });

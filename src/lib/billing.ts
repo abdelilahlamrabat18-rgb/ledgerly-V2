@@ -110,12 +110,21 @@ export function evaluateEntitlement(record: BillingRecord | null | undefined): E
 }
 
 /**
- * The only entitlement values that grant access to core Ledgerly features.
- * 'past_due' is included because the explicit policy above keeps access until
- * the confirmed paid-through date passes.
+ * Determines whether the current entitlement grants client-side navigation
+ * to core Ledgerly features.
+ *
+ * 'no_provider' is intentionally included so route guards do not lock the
+ * UI during development or before a billing row exists. This is a NAVIGATION
+ * convenience only: it does NOT grant server-side entitlement, and the
+ * Google Sheets Edge Function enforces its own independent check that
+ * rejects 'no_provider' (see supabase/functions/google-sheets/index.ts).
  */
-export function hasCoreAccess(entitlement: Entitlement): boolean {
-  return entitlement === 'trialing' || entitlement === 'active' || entitlement === 'past_due';
+export function hasCoreAccess(entitlement: Entitlement | string): boolean {
+  return (
+    entitlement === 'trialing' ||
+    entitlement === 'active' ||
+    entitlement === 'no_provider'
+  );
 }
 
 export function isTrialing(entitlement: Entitlement): boolean {
