@@ -1,0 +1,14 @@
+{
+  "buildCommand": "pnpm run build",
+  "outputDirectory": "dist",
+  "rewrites": [
+    {
+      "source": "/app/:path*",
+      "destination": "/index.html"
+    },
+    {
+      "source": "/privacy",
+      "destination": "/index.html"
+    }
+  ]
+}
