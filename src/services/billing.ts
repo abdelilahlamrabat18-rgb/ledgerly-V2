@@ -15,7 +15,7 @@ async function extractFunctionError(error: { message: string; context?: unknown 
   return userFacingError(error);
 }
 
-async function invokeBilling<T>(body: Record<string, unknown>): Promise<T> {
+async function invokeBilling<T extends Record<string, unknown>>(body: Record<string, unknown>): Promise<T> {
   const configIssue = getSupabaseConfigurationIssue();
   if (!isSupabaseConfigured || configIssue) throw new Error(configIssue || 'Supabase is not configured.');
   try {
@@ -29,18 +29,23 @@ async function invokeBilling<T>(body: Record<string, unknown>): Promise<T> {
 }
 
 export async function fetchBillingState(): Promise<BillingState> {
-  return invokeBilling<BillingState>({ action: 'read' });
+  const raw = await invokeBilling<Record<string, unknown>>({ action: 'read' });
+  return normalizeBillingState(raw);
 }
 
 export async function startTrialOnce(): Promise<BillingState> {
-  return invokeBilling<BillingState>({ action: 'start-trial' });
+  const raw = await invokeBilling<Record<string, unknown>>({ action: 'start-trial' });
+  return normalizeBillingState(raw);
 }
 
-export function isProviderConfigured(): boolean {
-  // Provider configuration lives in Supabase Edge Function secrets, not the
-  // browser. The absence of a configured provider is reported by the server
-  // response, so this helper is intentionally conservative.
-  return false;
+function normalizeBillingState(raw: Record<string, unknown>): BillingState {
+  const trial = raw.trial as BillingState['trial'] | undefined;
+  return {
+    ok: raw.ok === true,
+    providerApiKeyPresent: raw.providerApiKeyPresent === true,
+    trial: trial ?? null,
+    error: typeof raw.error === 'string' ? raw.error : undefined,
+  };
 }
 
 export type { Entitlement };

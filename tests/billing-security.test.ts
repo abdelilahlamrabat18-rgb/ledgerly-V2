@@ -29,7 +29,12 @@ describe('billing SQL security', () => {
     expect(migration).toMatch(/'lemonsqueezy'/i);
   });
 
-  it('both functions have safe search_path', () => {
+it('both functions have safe search_path', () => {
     expect(migration).toMatch(/security definer.*set search_path\s*=\s*public,\s*pg_temp/i);
+  });
+
+  it('drops the policy before creating it so the migration is idempotent', () => {
+    expect(migration).toMatch(/drop policy if exists "subscriptions_select_own_safe" on public\.subscriptions;/i);
+    expect(migration).toMatch(/create policy "subscriptions_select_own_safe" on public\.subscriptions/);
   });
 });

@@ -85,6 +85,7 @@ returns table (
 $$;
 
 -- Authenticated users may read their own safe projection only.
+drop policy if exists "subscriptions_select_own_safe" on public.subscriptions;
 create policy "subscriptions_select_own_safe" on public.subscriptions
   for select using (
     auth.uid() = user_id
@@ -140,7 +141,7 @@ begin
   v_trial_end := now() + (p_trial_days || ' days')::interval;
 
   insert into public.subscriptions (user_id, entitlement, trial_start, trial_end, provider)
-  values (p_user_id, 'trialing', v_trial_start, v_trial_end, 'leonsqueezy')
+  values (p_user_id, 'trialing', v_trial_start, v_trial_end, 'lemonsqueezy')
   on conflict (user_id) do nothing;
 
   return query

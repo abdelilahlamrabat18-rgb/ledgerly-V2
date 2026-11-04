@@ -19,7 +19,9 @@ export default function Login() {
       provider: 'google',
       options: {
         scopes: 'https://www.googleapis.com/auth/userinfo.email',
-        redirectTo: 'https://ledgerly-v2.vercel.app/dashboard',
+        // Dynamic: uses the current origin so the redirect works on any
+        // deployment (local, staging, or production) without hardcoding a URL.
+        redirectTo: `${window.location.origin}/app`,
       },
     });
 
@@ -31,7 +33,7 @@ export default function Login() {
 
   return (
     <div style={{ display: 'flex', justifyContent: 'center', marginTop: '100px' }}>
-      <button 
+      <button
         onClick={handleGoogleSignIn}
         style={{ padding: '10px 20px', fontSize: '16px', cursor: 'pointer' }}
       >

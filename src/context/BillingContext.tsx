@@ -15,6 +15,7 @@ import {
   hasCoreAccess,
   isTrialing,
   isPaid,
+  normalizeProviderApiKeyPresent,
   type Entitlement,
   type BillingState,
 } from '../lib/billing';
@@ -67,7 +68,7 @@ export function BillingProvider({ children }: { children: ReactNode }) {
       const result = await fetchBillingState();
       setState(result);
       setEntitlement(evaluateEntitlement(result.trial));
-      setProviderConfigured(Boolean(result.trial?.provider && result.trial.provider !== 'lemonsqueezy') || false);
+      setProviderConfigured(normalizeProviderApiKeyPresent(result.providerApiKeyPresent));
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Unable to load billing state.';
       setError(message);
@@ -88,6 +89,7 @@ export function BillingProvider({ children }: { children: ReactNode }) {
       const result = await startTrialOnce();
       setState(result);
       setEntitlement(evaluateEntitlement(result.trial));
+      setProviderConfigured(normalizeProviderApiKeyPresent(result.providerApiKeyPresent));
       toast?.('Your 14-day trial has started.', 'success');
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Unable to start your trial.';

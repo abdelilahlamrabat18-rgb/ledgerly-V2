@@ -160,7 +160,7 @@ function evaluateEntitlement(record: { entitlement?: string | null; trial_end?: 
   }
 }
 
-const CORE_ENTITLEMENTS = new Set(['trialing', 'active', 'past_due']);
+const CORE_ENTITLEMENTS = new Set(['trialing', 'active', 'no_provider']);
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders });
@@ -235,8 +235,17 @@ Deno.serve(async (req) => {
     const token = await googleAccessToken(await decrypt(secret.refresh_token_ciphertext));
 
     if (body.action === 'list-spreadsheets') {
-      const result = await googleGet('drive/v3/files?pageSize=100&orderBy=modifiedTime%20desc&fields=files(id,name,modifiedTime,webViewLink)&q=mimeType%3D%27application%2Fvnd.google-apps.spreadsheet%27%20and%20trashed%3Dfalse', token);
-      return json({ files: result.files || [] });
+      const pageToken = typeof body.pageToken === 'string' ? body.pageToken : undefined;
+      const params = new URLSearchParams({
+        pageSize: '100',
+        orderBy: 'modifiedTime desc',
+        fields: 'files(id,name,modifiedTime,webViewLink),nextPageToken',
+        q: "mimeType='application/vnd.google-apps.spreadsheet' and trashed=false",
+      });
+      if (pageToken) params.set('pageToken', pageToken);
+      const result = await googleGet(`drive/v3/files?${params.toString()}`, token);
+      const { data: connection } = await admin.from('google_connections').select('connected_email').eq('user_id', user.id).maybeSingle();
+      return json({ files: result.files || [], nextPageToken: result.nextPageToken || null, connectedEmail: connection?.connected_email || null });
     }
 
     if (body.action === 'list-tabs') {

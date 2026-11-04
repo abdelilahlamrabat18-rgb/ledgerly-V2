@@ -81,7 +81,13 @@ export interface SpreadsheetFile {
   id: string;
   name: string;
   modifiedTime?: string;
-  webViewLink?: string;
+ webViewLink?: string;
+}
+
+export interface SpreadsheetListResult {
+  files: SpreadsheetFile[];
+  nextPageToken?: string | null;
+  connectedEmail?: string | null;
 }
 
 export interface SpreadsheetTab {

@@ -4,7 +4,7 @@ import { useAuth } from '../../context/AuthContext';
 
 export function BillingPage() {
   const { isDemo } = useAuth();
-  const { state, entitlement, loading, error, startTrial, hasCoreAccess } = useBilling();
+  const { state, entitlement, loading, error, startTrial, hasCoreAccess, providerConfigured, refresh } = useBilling();
   const trial = state?.trial ?? null;
 
   if (loading) {
@@ -26,7 +26,24 @@ export function BillingPage() {
         </div>
       </div>
 
-      {error && <div className="notice" style={{ marginBottom: 18 }}>{error}</div>}
+      {error && (
+        <div className="notice" style={{ marginBottom: 18 }}>
+          <div>{error}</div>
+          <div style={{ marginTop: 10, display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+            <button className="button button-secondary" onClick={() => void refresh()}>
+              Retry
+            </button>
+            <span style={{ color: '#9aa4b2', fontSize: 10 }}>
+              If this keeps happening, the billing service may not be configured yet.
+            </span>
+          </div>
+        </div>
+      )}
+      {!error && !trial && !loading && (
+        <div className="notice" style={{ marginBottom: 18 }}>
+          No billing record found yet. Start a free 14-day trial to unlock core features.
+        </div>
+      )}
       {isDemo && <div className="notice" style={{ marginBottom: 18 }}>Demo mode is a local preview. It cannot start a real trial or accept payment.</div>}
 
       <section className="card" style={{ padding: 20, marginBottom: 18 }}>
@@ -64,7 +81,9 @@ export function BillingPage() {
               {trial?.entitlement === 'trialing' ? 'Trial active' : 'Start free trial'}
             </button>
             <span style={{ marginLeft: 10, color: '#9aa4b2', fontSize: 10 }}>
-              Payment provider not yet configured. Checkout will be available once setup is complete.
+              {providerConfigured
+                ? 'Payment API key detected. Checkout will be available after the trial ends.'
+                : 'Payment provider not yet configured. Checkout will be available once setup is complete.'}
             </span>
           </div>
         </div>

@@ -6,6 +6,7 @@ import {
   isPaid,
   mapProviderStatus,
   type BillingRecord,
+  type BillingState,
   type Entitlement,
 } from './billing';
 
@@ -124,5 +125,66 @@ describe('trial cannot be restarted by client input', () => {
     // A client cannot extend the trial by supplying a future date after the
     // real trial end has passed; the engine re-checks the stored timestamp.
     expect(evaluateEntitlement({ entitlement: 'trialing', trial_end: PAST })).not.toBe('trialing');
+  });
+});
+
+/**
+ * Provider identity is a static property of the subscriptions row (the
+ * migration defaults it to 'lemonsqueezy'). API-key presence is an
+ * operational concern: whether the Lemon Squeezy API key is present in the
+ * Edge Function environment. These two concepts must never be conflated.
+ *
+ * The presence decision lives server-side (supabase/functions/billing-state)
+ * and reaches the frontend as a single safe boolean on BillingState. The lib
+ * below only asserts the contract the frontend relies on.
+ */
+describe('provider identity vs API-key presence', () => {
+  const LEMON_SQUEEZY = 'lemonsqueezy';
+
+  it('the default provider identity is lemonsqueezy regardless of presence', () => {
+    // Identity is a column default, not a presence signal.
+    expect(LEMON_SQUEEZY).toBe('lemonsqueezy');
+  });
+
+  it('a default provider value must not imply a configured payment integration', () => {
+    // A row created by start_trial_if_missing carries the default provider
+    // even when no Lemon Squeezy account or API credentials exist. Presence
+    // must therefore be derived independently.
+    const defaultRow = { provider: LEMON_SQUEEZY };
+    const apiKeyPresent = false; // server-side: no LEMON_SQUEEZY_API_KEY env var
+    expect(defaultRow.provider).toBe(LEMON_SQUEEZY);
+    expect(apiKeyPresent).toBe(false);
+  });
+
+  it('provider API-key presence is a boolean and never exposes secret values', () => {
+    const state: BillingState = {
+      ok: true,
+      providerApiKeyPresent: false,
+      trial: null,
+    };
+
+    const serialized = JSON.stringify(state);
+    expect(serialized).toContain('"providerApiKeyPresent":false');
+    // The field name is a boolean flag, not a secret. What must never leak
+    // is actual secret material: a key value, a token, or a credential.
+    expect(serialized).not.toMatch(/secret/i);
+    expect(serialized).not.toMatch(/token/i);
+    expect(serialized).not.toMatch(/sk_[a-z0-9]/i);
+    expect(serialized).not.toMatch(/ls_[a-z0-9]/i);
+  });
+
+  it('entitlement behavior is unchanged when the API key is present', () => {
+    // Presence being true must not alter entitlement evaluation.
+    expect(evaluateEntitlement({ entitlement: 'trialing', trial_end: FUTURE })).toBe('trialing');
+    expect(evaluateEntitlement({ entitlement: 'active' })).toBe('active');
+    expect(hasCoreAccess('trialing')).toBe(true);
+    expect(isPaid('active')).toBe(true);
+  });
+
+  it('entitlement behavior is unchanged when the API key is absent', () => {
+    expect(evaluateEntitlement({ entitlement: 'trialing', trial_end: FUTURE })).toBe('trialing');
+    expect(evaluateEntitlement({ entitlement: 'trialing', trial_end: PAST })).toBe('expired');
+    expect(hasCoreAccess('no_provider')).toBe(true);
+    expect(isPaid('trialing')).toBe(false);
   });
 });

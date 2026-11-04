@@ -5,7 +5,7 @@
  * user's billing entitlement. It runs with the service role, bypasses RLS,
  * and never trusts client-supplied user IDs, timestamps, or statuses.
  *
- * GET  /billing-state  -> { ok: true, trial: {...}, entitlement: "..." }
+ * GET  /billing-state  -> { ok: true, providerApiKeyPresent: bool, trial: {...} }
  * POST /billing-state  -> { action: "start-trial" } starts a 14-day trial once.
  *
  * All responses are read-only safe projections. Provider identifiers and
@@ -17,6 +17,24 @@ const corsHeaders: Record<string, string> = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
   'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
 };
+
+/**
+ * Provider API-key presence is operational environment state, not a per-user
+ * subscription property. It is derived here from the presence of the Lemon
+ * Squeezy API key in the Edge Function's secret environment.
+ *
+ * This intentionally does NOT depend on any user row, so a brand-new user
+ * with no subscription record still sees the correct value.
+ *
+ * This check proves only that the secret is set — it does NOT prove that the
+ * key is valid, that a store or variant is configured, or that checkout is
+ * operational. Trial creation is independent of this flag.
+ *
+ * No secret values are returned to the frontend — only a boolean.
+ */
+function isProviderApiKeyPresent(): boolean {
+  return Boolean(Deno.env.get('LEMON_SQUEEZY_API_KEY'));
+}
 
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -65,43 +83,58 @@ Deno.serve(async (req: Request): Promise<Response> => {
       return json({ ok: false, error: 'Invalid request body.' }, 400);
     }
 
-    if (body.action !== 'start-trial') {
-      return json({ ok: false, error: 'Unknown billing action.' }, 400);
+    if (body.action === 'start-trial') {
+      // Server-authoritative: the user id comes from the verified session,
+      // and the trial start/end are computed here, never supplied by the client.
+      const { data, error } = await admin.rpc('start_trial_if_missing', {
+        p_user_id: userData.user.id,
+        p_trial_days: TRIAL_DAYS,
+      });
+
+      if (error) {
+        console.error('[billing-state] start_trial_if_missing failed:', error.message);
+        return json({ ok: false, error: 'Unable to start the trial. Please try again.' }, 500);
+      }
+
+      const row = (data as Array<unknown> | null)?.[0] as
+        | { user_id: string; entitlement: string; trial_start: string | null; trial_end: string | null; created: boolean }
+        | undefined;
+
+      return json({
+        ok: true,
+        providerApiKeyPresent: isProviderApiKeyPresent(),
+        trial: row
+          ? {
+              userId: row.user_id,
+              entitlement: row.entitlement,
+              trialStart: row.trial_start,
+              trialEnd: row.trial_end,
+              created: Boolean(row.created),
+            }
+          : null,
+      });
     }
 
-    // Server-authoritative: the user id comes from the verified session,
-    // and the trial start/end are computed here, never supplied by the client.
-    const { data, error } = await admin.rpc('start_trial_if_missing', {
-      p_user_id: userData.user.id,
-      p_trial_days: TRIAL_DAYS,
-    });
-
-    if (error) {
-      console.error('[billing-state] start_trial_if_missing failed:', error.message);
-      return json({ ok: false, error: 'Unable to start the trial. Please try again.' }, 500);
+    if (body.action === 'read') {
+      // The client calls this function via supabase.functions.invoke, which
+      // always sends POST. Route the read request to the same safe projection
+      // used by the GET path below so the Billing page can load state.
+      return readBillingState(admin, userData.user.id);
     }
 
-    const row = (data as Array<unknown> | null)?.[0] as
-      | { user_id: string; entitlement: string; trial_start: string | null; trial_end: string | null; created: boolean }
-      | undefined;
-
-    return json({
-      ok: true,
-      trial: row
-        ? {
-            userId: row.user_id,
-            entitlement: row.entitlement,
-            trialStart: row.trial_start,
-            trialEnd: row.trial_end,
-            created: Boolean(row.created),
-          }
-        : null,
-    });
+    return json({ ok: false, error: 'Unknown billing action.' }, 400);
   }
 
   // GET: read-only safe projection.
+  return readBillingState(admin, userData.user.id);
+}
+
+async function readBillingState(
+  admin: ReturnType<typeof createClient>,
+  userId: string,
+): Promise<Response> {
   const { data, error } = await admin.rpc('subscription_safe_view', {
-    p_user_id: userData.user.id,
+    p_user_id: userId,
   });
 
   if (error) {
@@ -126,6 +159,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
 
   return json({
     ok: true,
+    providerApiKeyPresent: isProviderApiKeyPresent(),
     trial: row
       ? {
           userId: row.user_id,

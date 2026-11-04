@@ -1,4 +1,4 @@
-project_id = "ledgerly"
+project_id = "jnmftisogfmzaijetdju"
 
 [functions.google-oauth-start]
 verify_jwt = true

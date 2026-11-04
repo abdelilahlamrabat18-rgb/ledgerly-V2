@@ -48,6 +48,7 @@ export interface BillingTrial {
 
 export interface BillingState {
   ok: boolean;
+  providerApiKeyPresent?: boolean;
   trial: BillingTrial | null;
   error?: string;
 }
@@ -161,4 +162,15 @@ export function mapProviderStatus(status: string | null | undefined): Entitlemen
     default:
       return 'unpaid';
   }
+}
+
+/**
+ * Normalize a provider API-key-presence field from a server response.
+ *
+ * The server returns a boolean; this is defensive against a missing or
+ * malformed field so the frontend never has to trust a cast. Unknown values
+ * fail closed (false), which is the safe default: no API key present.
+ */
+export function normalizeProviderApiKeyPresent(value: unknown): boolean {
+  return value === true;
 }
