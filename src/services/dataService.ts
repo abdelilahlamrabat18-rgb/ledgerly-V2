@@ -47,12 +47,19 @@ export async function listEntity<T>(entity: EntityName): Promise<T[]> {
 
 export async function createEntity<T>(entity: EntityName, payload: Record<string, unknown>, userId?: string): Promise<T> {
   if (!requireRemote()) {
-    const item = { ...payload, id: `${entity}-${Date.now()}`, user_id: userId || 'demo', created_at: new Date().toISOString(), updated_at: new Date().toISOString() };
+    const item = { ...payload, id: `${entity}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, user_id: userId || 'demo', created_at: new Date().toISOString(), updated_at: new Date().toISOString() };
     demoStore[entity].unshift(item);
     return item as T;
   }
   try {
-    const { data, error } = await supabase.from(entity).insert(payload as never).select().single();
+    let resolvedUserId = userId;
+    if (!resolvedUserId) {
+      const { data } = await supabase.auth.getUser();
+      resolvedUserId = data.user?.id;
+    }
+    const record = resolvedUserId && !('user_id' in payload) ? { ...payload, user_id: resolvedUserId } : payload;
+    if (resolvedUserId && !record.user_id) (record as Record<string, unknown>).user_id = resolvedUserId;
+    const { data, error } = await supabase.from(entity).insert(record as never).select().single();
     if (error) throw error;
     return data as T;
   } catch (error) {

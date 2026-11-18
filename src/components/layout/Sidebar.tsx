@@ -27,7 +27,16 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
   }
   return <aside className={`app-sidebar ${open ? 'open' : ''}`}>
     <button className="icon-button mobile-menu" onClick={onClose} aria-label="Close navigation"><X size={20} /></button>
-    <div className="brand"><span className="brand-mark"><img src="/logo.png" alt="Ledgerly" /></span><span>ledgerly</span></div>
+    <div className="brand flex items-center gap-2.5">
+      <span className="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" width="18" height="18">
+          <path d="M6 4h9l3 3v11a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Z" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" />
+          <path d="M15 4v3h3" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" />
+          <path d="M8.5 12h7M8.5 15.5h4.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+        </svg>
+      </span>
+      <span className="whitespace-nowrap">Ledgerly</span>
+    </div>
     <p className="nav-label">Workspace</p>
     <nav className="nav-list">
       {navItems.map(({ to, label, icon: Icon, end }) => <NavLink key={to} to={to} end={end} className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`} onClick={onClose}><Icon /><span>{label}</span></NavLink>)}

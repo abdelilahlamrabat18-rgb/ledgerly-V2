@@ -66,15 +66,25 @@ function parseJson(text: string): { headers: string[]; rows: string[][] } {
   throw new Error('JSON must be an array of records or a 2D array.');
 }
 
-function parseWorkbook(buffer: ArrayBuffer, format: ImportFileFormat): { headers: string[]; rows: string[][] } {
-  const wb = XLSX.read(buffer, { type: 'array', cellDates: true });
-  const sheetName = wb.SheetNames[0];
-  if (!sheetName) throw new Error('This file has no sheets.');
+function parseSheet(wb: XLSX.WorkBook, sheetName: string, formatLabel: string): { headers: string[]; rows: string[][] } {
   const ws = wb.Sheets[sheetName];
+  if (!ws) throw new Error('Selected sheet could not be read.');
   const arrays = XLSX.utils.sheet_to_json<unknown[]>(ws, { header: 1, raw: false, defval: '' }) as unknown[][];
   const parsed = rowsFromArrays(arrays);
-  if (!parsed) throw new Error(`This ${format.toUpperCase()} file is empty or has no header row. Add column headers and try again.`);
+  if (!parsed) throw new Error(`This ${formatLabel} sheet is empty or has no header row. Add column headers and try again.`);
   return parsed;
+}
+
+function autoDetectSheet(names: string[]): string | null {
+  if (!names.length) return null;
+  const lower = names.map((n) => n.toLowerCase());
+  for (const opt of ENTITY_OPTIONS) {
+    const idx = lower.indexOf(opt.value);
+    if (idx >= 0) return names[idx];
+    const idxLabel = lower.indexOf(opt.label.toLowerCase());
+    if (idxLabel >= 0) return names[idxLabel];
+  }
+  return names[0];
 }
 
 function parseAmount(value: string) {
@@ -121,10 +131,11 @@ function validateMapping(target: EntityName, headers: string[], mapping: Record<
 }
 function mapRecord(target: EntityName, headers: string[], row: string[], mapping: Record<string, string>, userId?: string) {
   const get = (field: string) => rowValue(row, headers, mapping, field);
-  const common = userId ? { user_id: userId } : {};
+  const opt = (field: string) => { const v = get(field); return v || null; };
+  const common: Record<string, unknown> = userId ? { user_id: userId } : {};
   if (target === 'clients') {
     const name = get('name');
-    return name ? { ...common, name, email: get('email') || null, phone: get('phone') || null, company: get('company') || null, address: get('address') || null, notes: get('notes') || null } : null;
+    return name ? { ...common, name, email: opt('email'), phone: opt('phone'), company: opt('company'), address: opt('address'), notes: opt('notes') } : null;
   }
   if (target === 'invoices') {
     const invoiceNumber = get('invoice_number');
@@ -132,13 +143,14 @@ function mapRecord(target: EntityName, headers: string[], row: string[], mapping
     if (!invoiceNumber || amount === null || amount < 0) return null;
     const validStatus = ['draft', 'pending', 'paid', 'overdue', 'cancelled'];
     const status = get('status').toLowerCase();
-    return { ...common, invoice_number: invoiceNumber, amount, status: validStatus.includes(status) ? status : 'draft', issue_date: parseDate(get('issue_date')), due_date: get('due_date') ? parseDate(get('due_date')) : null, notes: get('notes') || null };
+    const clientId = get('client_id');
+    return { ...common, invoice_number: invoiceNumber, amount, status: validStatus.includes(status) ? status : 'draft', issue_date: parseDate(get('issue_date')), due_date: get('due_date') ? parseDate(get('due_date')) : null, notes: opt('notes'), ...(clientId ? { client_id: clientId } : {}) };
   }
   if (target === 'expenses') {
     const description = get('description');
     const amount = parseAmount(get('amount'));
     if (!description || amount === null || amount < 0) return null;
-    return { ...common, description, category: get('category') || 'Other', amount, date: parseDate(get('date')), notes: get('notes') || null };
+    return { ...common, description, category: get('category') || 'Other', amount, date: parseDate(get('date')), notes: opt('notes') };
   }
   const product = get('product');
   const total = parseAmount(get('total'));
@@ -146,7 +158,8 @@ function mapRecord(target: EntityName, headers: string[], row: string[], mapping
   const quantity = parseAmount(get('quantity')) || 1;
   const validStatus = ['pending', 'processing', 'completed', 'cancelled'];
   const status = get('status').toLowerCase();
-  return { ...common, product, quantity: Math.max(1, Math.floor(quantity)), total, status: validStatus.includes(status) ? status : 'pending', order_date: parseDate(get('order_date')), notes: get('notes') || null };
+  const clientId = get('client_id');
+  return { ...common, product, quantity: Math.max(1, Math.floor(quantity)), total, status: validStatus.includes(status) ? status : 'pending', order_date: parseDate(get('order_date')), notes: opt('notes'), ...(clientId ? { client_id: clientId } : {}) };
 }
 
 export function GoogleSheetsPage() {
@@ -162,6 +175,11 @@ export function GoogleSheetsPage() {
   const [fileLoading, setFileLoading] = useState(false);
   const [dragging, setDragging] = useState(false);
 
+  const [fileFormat, setFileFormat] = useState<ImportFileFormat | null>(null);
+  const [workbook, setWorkbook] = useState<XLSX.WorkBook | null>(null);
+  const [sheetNames, setSheetNames] = useState<string[]>([]);
+  const [selectedSheet, setSelectedSheet] = useState<string | null>(null);
+
   const [importTarget, setImportTarget] = useState<EntityName>('clients');
   const [mapping, setMapping] = useState<Record<string, string>>({});
   const [importing, setImporting] = useState(false);
@@ -169,12 +187,44 @@ export function GoogleSheetsPage() {
   const [importError, setImportError] = useState<string | null>(null);
   const [showImportConfirm, setShowImportConfirm] = useState(false);
 
-  function resetMappingState() {
-    setImportTarget('clients');
+  function resetMappingState(nextTarget?: EntityName) {
+    setImportTarget(nextTarget ?? 'clients');
     setMapping({});
     setImportResult(null);
     setImportError(null);
     setShowImportConfirm(false);
+  }
+
+  function applyParsed(parsed: { headers: string[]; rows: string[][] }, sourceLabel: string) {
+    if (!parsed.headers.length) throw new Error('This file has no header row. Add column headers and try again.');
+    if (parsed.rows.length > MAX_ROWS) {
+      throw new Error(`This file has more than ${MAX_ROWS.toLocaleString()} data rows. Split it into smaller imports.`);
+    }
+    setHeaders(parsed.headers);
+    setRows(parsed.rows);
+    toast(`Loaded ${sourceLabel}. Map columns to import.`, 'success');
+  }
+
+  function loadWorkbookSheet(wb: XLSX.WorkBook, sheet: string, format: ImportFileFormat, name: string, resetTarget = true) {
+    try {
+      const parsed = parseSheet(wb, sheet, format.toUpperCase());
+      setSelectedSheet(sheet);
+      if (resetTarget) {
+        const match = ENTITY_OPTIONS.find((o) => o.value === sheet.toLowerCase() || o.label.toLowerCase() === sheet.toLowerCase());
+        resetMappingState(match?.value);
+      } else {
+        setMapping({});
+        setImportResult(null);
+        setImportError(null);
+        setShowImportConfirm(false);
+      }
+      applyParsed(parsed, `${name} (${sheet})`);
+    } catch (err) {
+      setHeaders(null);
+      setRows([]);
+      setSelectedSheet(sheet);
+      setFileError(err instanceof Error ? err.message : 'Could not read this sheet.');
+    }
   }
 
   async function handleFile(file: File) {
@@ -183,24 +233,36 @@ export function GoogleSheetsPage() {
     setHeaders(null);
     setRows([]);
     setFileName(file.name);
+    setWorkbook(null);
+    setSheetNames([]);
+    setSelectedSheet(null);
+    setFileFormat(null);
     const format = detectFormat(file);
     if (!format) { setFileError('Upload a .csv, .xlsx, .xls, or .json file.'); return; }
     if (file.size > MAX_BYTES) { setFileError('File is too large (max 10 MB).'); return; }
     setFileLoading(true);
     try {
-      let parsed: { headers: string[]; rows: string[][] };
+      setFileFormat(format);
       if (format === 'json') {
-        parsed = parseJson(await file.text());
+        const parsed = parseJson(await file.text());
+        applyParsed(parsed, file.name);
+      } else if (format === 'csv') {
+        const wb = XLSX.read(await file.arrayBuffer(), { type: 'array', cellDates: true, raw: false });
+        const sheet = wb.SheetNames[0];
+        if (!sheet) throw new Error('This CSV file could not be read.');
+        const parsed = parseSheet(wb, sheet, 'CSV');
+        applyParsed(parsed, file.name);
       } else {
-        parsed = parseWorkbook(await file.arrayBuffer(), format);
+        const wb = XLSX.read(await file.arrayBuffer(), { type: 'array', cellDates: true });
+        if (!wb.SheetNames.length) throw new Error('This workbook has no sheets.');
+        setWorkbook(wb);
+        setSheetNames(wb.SheetNames);
+        const auto = autoDetectSheet(wb.SheetNames);
+        if (!auto) throw new Error('This workbook has no sheets.');
+        const match = ENTITY_OPTIONS.find((o) => o.value === auto.toLowerCase() || o.label.toLowerCase() === auto.toLowerCase());
+        if (match) setImportTarget(match.value);
+        loadWorkbookSheet(wb, auto, format, file.name, false);
       }
-      if (!parsed.headers.length) throw new Error('This file has no header row. Add column headers and try again.');
-      if (parsed.rows.length > MAX_ROWS) {
-        throw new Error(`This file has more than ${MAX_ROWS.toLocaleString()} data rows. Split it into smaller imports.`);
-      }
-      setHeaders(parsed.headers);
-      setRows(parsed.rows);
-      toast(`Loaded ${file.name}. Map columns to import.`, 'success');
     } catch (err) {
       setFileError(err instanceof Error ? err.message : 'Could not read this file.');
     } finally {
@@ -257,7 +319,7 @@ export function GoogleSheetsPage() {
       setImportResult({ imported, skipped });
       if (imported > 0) {
         toast(`Imported ${imported} row(s).`, 'success');
-        window.dispatchEvent(new CustomEvent('ledgerly:data-updated'));
+        window.dispatchEvent(new Event('ledgerly:data-updated'));
         navigate('/app/dashboard');
         return;
       }
@@ -273,7 +335,7 @@ export function GoogleSheetsPage() {
   }
   function cancelImport() { if (!importing) setShowImportConfirm(false); }
 
-  const activeLabel = fileName || 'File';
+  const activeLabel = selectedSheet && fileName ? `${fileName} — ${selectedSheet}` : (fileName || 'File');
 
   return (
     <main className="page-wrap">
@@ -287,7 +349,7 @@ export function GoogleSheetsPage() {
 
       <section className="card" style={{ padding: 20, marginBottom: 18 }}>
         <p className="eyebrow" style={{ margin: 0 }}>Import from file</p>
-        <p className="muted" style={{ margin: '6px 0 12px', fontSize: 12 }}>Drag and drop or choose a <strong>.csv</strong>, <strong>.xlsx</strong>, <strong>.xls</strong>, or <strong>.json</strong> file (max 10 MB, 5,000 data rows). First row must be headers (or JSON array of objects).</p>
+        <p className="muted" style={{ margin: '6px 0 12px', fontSize: 12 }}>Drag and drop or choose a <strong>.csv</strong>, <strong>.xlsx</strong>, <strong>.xls</strong>, or <strong>.json</strong> file (max 10 MB, 5,000 data rows). First row must be headers (or JSON array of objects). Excel workbooks can contain multiple sheets.</p>
         <div
           role="button"
           tabIndex={0}
@@ -303,6 +365,24 @@ export function GoogleSheetsPage() {
           {fileName && <p className="muted" style={{ margin: '6px 0 0', fontSize: 11 }}>Selected: {fileName}</p>}
         </div>
         <input ref={fileInputRef} type="file" accept={ACCEPT} style={{ display: 'none' }} onChange={(e) => { const f = e.target.files?.[0]; if (f) void handleFile(f); e.target.value = ''; }} />
+        {sheetNames.length > 1 && workbook && fileFormat && (fileFormat === 'xlsx' || fileFormat === 'xls') && (
+          <div style={{ marginTop: 14 }}>
+            <p className="muted" style={{ margin: '0 0 8px', fontSize: 12 }}>This workbook has multiple sheets. Select which sheet to import:</p>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              {sheetNames.map((name) => (
+                <button
+                  key={name}
+                  type="button"
+                  className={`button ${selectedSheet === name ? 'button-primary' : 'button-secondary'}`}
+                  onClick={() => { if (fileName) loadWorkbookSheet(workbook, name, fileFormat, fileName); }}
+                  disabled={fileLoading}
+                >
+                  {name}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
         {fileError && <div className="notice" style={{ marginTop: 12, borderColor: '#e95f67' }}>{fileError}</div>}
       </section>
 
