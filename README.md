@@ -1,17 +1,17 @@
 # Ledgerly — Business Management SaaS MVP
 
-Ledgerly is an independent React + TypeScript + Vite SaaS for small businesses that currently manage clients, invoices, expenses, and orders in Google Sheets.
+Ledgerly is an independent React + TypeScript + Vite SaaS for small businesses that currently manage clients, invoices, expenses, and orders in spreadsheets.
 
 It is intentionally built as a real application rather than a visual mockup:
 
 - React, TypeScript, Vite, Tailwind CSS, and custom CSS design tokens
 - Supabase Auth with persistent sessions and password reset
 - PostgreSQL schema with Row Level Security on every user-owned table
-- Google OAuth + Sheets/Drive integration through Supabase Edge Functions
-- Secure server-side refresh-token storage (encrypted; never exposed to the browser)
+- Multi-format data import (CSV, Excel `.xlsx`/`.xls`, JSON) with client-side parsing, column mapping, and RLS-scoped persistence
+- Secure server-side refresh-token storage for Google OAuth metadata (encrypted; never exposed to the browser)
 - CRUD workflows for clients, invoices, expenses, and orders
 - Responsive dashboard with metrics, cash-flow chart, recent activity, empty/error/loading states
-- Route-level code splitting for app pages, with dedicated Dashboard, Transactions, Analytics, Clients, Invoices, Expenses, Orders, Google Sheets, and Settings views
+- Route-level code splitting for app pages, with dedicated Dashboard, Transactions, Analytics, Clients, Invoices, Expenses, Orders, Data Import, and Settings views
 - Profile-aware user greetings with metadata/email fallbacks; no dashboard user name or chart totals are hardcoded
 - Dashboard and Analytics charts are calculated from the signed-in user’s RLS-scoped invoice and expense records; empty charts show an explicit no-data state
 
@@ -70,42 +70,17 @@ The Edge Functions intentionally do **not** read `VITE_` variables. Supabase inj
 
 The app routes include `/`, protected `/app/*` views, and shortcut redirects for `/transactions`, `/analytics`, and `/settings`.
 
-## Google Sheets setup
+## Data import
 
-The Google integration is implemented through three Supabase Edge Functions:
+The Data Import page (`/app/google-sheets`) supports client-side file uploads with preview, column mapping, validation, and import into `clients`, `invoices`, `expenses`, or `orders`:
 
-- `google-oauth-start` creates a signed, expiring OAuth state and authorization URL.
-- `google-oauth-callback` exchanges the code, encrypts the refresh token with AES-GCM, and stores it in the server-only secrets table.
-- `google-sheets` refreshes access tokens server-side, lists spreadsheets/tabs, previews headers, and validates/imports mapped rows.
+- **CSV** (`.csv`)
+- **Excel** (`.xlsx`, `.xls`)
+- **JSON** (`.json`) — array of objects or 2D array with a header row
 
-Create a Google Cloud OAuth **Web application** client. Add this authorized redirect URI:
+The first row is treated as headers. Imports are capped at 5,000 data rows for the MVP and files up to 10 MB. On successful import the app dispatches a data-updated event and redirects to the Dashboard.
 
-```text
-https://YOUR_PROJECT.supabase.co/functions/v1/google-oauth-callback
-```
-
-Deploy the functions:
-
-```bash
-supabase functions deploy google-oauth-start
-supabase functions deploy google-oauth-callback --no-verify-jwt
-supabase functions deploy google-sheets
-```
-
-Set the following as Supabase function secrets. `GOOGLE_TOKEN_ENCRYPTION_KEY_B64` must decode to exactly 32 random bytes:
-
-```bash
-supabase secrets set \
-  GOOGLE_CLIENT_ID=... \
-  GOOGLE_CLIENT_SECRET=... \
-  GOOGLE_STATE_SECRET=$(openssl rand -hex 32) \
-  GOOGLE_TOKEN_ENCRYPTION_KEY_B64=$(openssl rand -base64 32) \
-  APP_URL=https://your-production-app.example.com
-```
-
-The OAuth flow requests only the scopes needed for the MVP: `drive.readonly` to list the user’s spreadsheets, `spreadsheets.readonly` to read spreadsheet values, and `openid email` for the connection identity. The app never asks the user for a Google password.
-
-If a user cancels authorization, loses permissions, uses a deleted spreadsheet, selects an empty tab, or has an expired token, the functions return explicit errors and the UI shows a retryable message. Imports are capped at 5,000 data rows for the MVP and the first row is treated as headers.
+Google OAuth/Edge Functions for token storage and any optional server-side sync remain in the repository, but direct Google Sheet URL/ID pasting and Drive discovery are not part of the file-upload workflow.
 
 ## Deployment
 
@@ -144,3 +119,4 @@ The app has no Hercules or proprietary app-builder dependency. All frontend code
 ## Scope intentionally left for later
 
 Team roles, billing/subscriptions, receipts/file storage, advanced automations, and AI features are not part of this MVP. The data layer and Edge Function boundary leave room to add them without coupling the core app to a single AI provider.
+

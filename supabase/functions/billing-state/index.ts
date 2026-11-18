@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Ledgerly billing state (server-authoritative).
  *
  * This Edge Function is the ONLY trusted path for reading or creating a
@@ -44,6 +44,15 @@ function json(body: unknown, status = 200): Response {
 }
 
 const TRIAL_DAYS = 14;
+
+// Minimal structural type for the service-role Supabase client. createClient
+// is imported dynamically inside the request handler, so it is not available
+// at module scope. This type only needs to describe the .rpc() call that
+// readBillingState actually performs, which keeps the annotation valid for
+// the Deno TypeScript parser without depending on a URL import type.
+type SupabaseAdminClient = {
+  rpc(name: string, params: Record<string, unknown>): Promise<{ data: unknown; error: unknown }>;
+};
 
 Deno.serve(async (req: Request): Promise<Response> => {
   if (req.method === 'OPTIONS') {
@@ -127,10 +136,10 @@ Deno.serve(async (req: Request): Promise<Response> => {
 
   // GET: read-only safe projection.
   return readBillingState(admin, userData.user.id);
-}
+});
 
 async function readBillingState(
-  admin: ReturnType<typeof createClient>,
+  admin: SupabaseAdminClient,
   userId: string,
 ): Promise<Response> {
   const { data, error } = await admin.rpc('subscription_safe_view', {
@@ -175,4 +184,4 @@ async function readBillingState(
         }
       : null,
   });
-});
+}

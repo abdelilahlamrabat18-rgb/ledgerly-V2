@@ -77,27 +77,9 @@ export interface GoogleConnection {
   updated_at: string;
 }
 
-export interface SpreadsheetFile {
-  id: string;
-  name: string;
-  modifiedTime?: string;
- webViewLink?: string;
-}
-
-export interface SpreadsheetListResult {
-  files: SpreadsheetFile[];
-  nextPageToken?: string | null;
-  connectedEmail?: string | null;
-}
-
-export interface SpreadsheetTab {
-  id: number;
-  title: string;
-  rowCount?: number;
-  columnCount?: number;
-}
-
 export type EntityName = 'clients' | 'invoices' | 'expenses' | 'orders';
+
+export type ImportFileFormat = 'csv' | 'xlsx' | 'xls' | 'json';
 
 export type SubscriptionEntitlement =
   | 'trialing'
@@ -136,7 +118,7 @@ export interface MappingField {
   required?: boolean;
 }
 
-export interface SheetPreview {
+export interface ImportPreview {
   headers: string[];
   rows: string[][];
   totalRows: number;

@@ -1,9 +1,10 @@
-import { useEffect, useState } from 'react';
-import { useLocation, useNavigate } from 'react-router-dom';
+import { useMemo, useRef, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
+import * as XLSX from 'xlsx';
 import { useToast } from '../../context/ToastContext';
-import { listSpreadsheets, startGoogleConnection, disconnectGoogle, listTabs, previewSheet, syncSheet } from '../../services/googleSheets';
-import type { SpreadsheetFile, SpreadsheetListResult, SpreadsheetTab, SheetPreview, EntityName } from '../../types';
-import { entityFields } from '../../services/dataService';
+import { useAuth } from '../../context/AuthContext';
+import { createEntity, entityFields } from '../../services/dataService';
+import type { EntityName, ImportFileFormat } from '../../types';
 
 const ENTITY_OPTIONS: { value: EntityName; label: string }[] = [
   { value: 'clients', label: 'Clients' },
@@ -12,435 +13,349 @@ const ENTITY_OPTIONS: { value: EntityName; label: string }[] = [
   { value: 'orders', label: 'Orders' },
 ];
 
-let requestCounter = 0;
-let activeRequestId = 0;
+const MAX_ROWS = 5000;
+const MAX_BYTES = 10 * 1024 * 1024;
+const ACCEPT = '.csv,.xlsx,.xls,.json';
+
+function detectFormat(file: File): ImportFileFormat | null {
+  const name = file.name.toLowerCase();
+  if (name.endsWith('.csv')) return 'csv';
+  if (name.endsWith('.xlsx')) return 'xlsx';
+  if (name.endsWith('.xls')) return 'xls';
+  if (name.endsWith('.json')) return 'json';
+  return null;
+}
+
+function toCell(value: unknown): string {
+  if (value === null || value === undefined) return '';
+  if (typeof value === 'object') return JSON.stringify(value);
+  return String(value).trim();
+}
+
+function rowsFromArrays(arrays: unknown[][]): { headers: string[]; rows: string[][] } | null {
+  if (!arrays.length) return null;
+  const headerRow = arrays[0].map((c) => toCell(c));
+  if (!headerRow.some((h) => h)) return null;
+  const headers = headerRow;
+  const rows = arrays.slice(1).map((r) => headers.map((_, i) => toCell((r as unknown[])[i])));
+  return { headers, rows: rows.filter((r) => r.some((c) => c !== '')) };
+}
+
+function parseJson(text: string): { headers: string[]; rows: string[][] } {
+  const data = JSON.parse(text) as unknown;
+  if (Array.isArray(data)) {
+    if (!data.length) throw new Error('This JSON file is empty.');
+    if (Array.isArray(data[0])) {
+      const parsed = rowsFromArrays(data as unknown[][]);
+      if (!parsed) throw new Error('This JSON file has no header row. Add column headers and try again.');
+      return parsed;
+    }
+    if (typeof data[0] === 'object' && data[0] !== null) {
+      const objects = data as Record<string, unknown>[];
+      const headers = Array.from(new Set(objects.flatMap((o) => Object.keys(o || {}))));
+      if (!headers.length) throw new Error('This JSON file has no fields to import.');
+      const rows = objects.map((o) => headers.map((h) => toCell(o?.[h])));
+      return { headers, rows: rows.filter((r) => r.some((c) => c !== '')) };
+    }
+    throw new Error('JSON must be an array of objects or a 2D array with a header row.');
+  }
+  if (data && typeof data === 'object') {
+    const values = Object.values(data as Record<string, unknown>);
+    if (Array.isArray(values[0])) return parseJson(JSON.stringify(values[0]));
+  }
+  throw new Error('JSON must be an array of records or a 2D array.');
+}
+
+function parseWorkbook(buffer: ArrayBuffer, format: ImportFileFormat): { headers: string[]; rows: string[][] } {
+  const wb = XLSX.read(buffer, { type: 'array', cellDates: true });
+  const sheetName = wb.SheetNames[0];
+  if (!sheetName) throw new Error('This file has no sheets.');
+  const ws = wb.Sheets[sheetName];
+  const arrays = XLSX.utils.sheet_to_json<unknown[]>(ws, { header: 1, raw: false, defval: '' }) as unknown[][];
+  const parsed = rowsFromArrays(arrays);
+  if (!parsed) throw new Error(`This ${format.toUpperCase()} file is empty or has no header row. Add column headers and try again.`);
+  return parsed;
+}
+
+function parseAmount(value: string) {
+  const cleaned = String(value || '').replace(/[$,\s]/g, '');
+  const parsed = Number(cleaned);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+function parseDate(value: string) {
+  const text = String(value || '').trim();
+  if (!text) return new Date().toISOString().slice(0, 10);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(text)) return text;
+  const usDate = text.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})$/);
+  if (usDate) {
+    const year = usDate[3].length === 2 ? `20${usDate[3]}` : usDate[3];
+    return `${year}-${usDate[1].padStart(2, '0')}-${usDate[2].padStart(2, '0')}`;
+  }
+  const parsed = new Date(text);
+  if (Number.isNaN(parsed.getTime())) return new Date().toISOString().slice(0, 10);
+  return parsed.toISOString().slice(0, 10);
+}
+function rowValue(row: string[], headers: string[], mapping: Record<string, string>, field: string) {
+  const header = mapping[field];
+  if (!header) return '';
+  const index = headers.indexOf(header);
+  return index < 0 ? '' : String(row[index] ?? '').trim();
+}
+function requiredFields(target: EntityName) {
+  if (target === 'clients') return ['name'];
+  if (target === 'invoices') return ['invoice_number', 'amount'];
+  if (target === 'expenses') return ['description', 'amount'];
+  return ['product', 'total'];
+}
+function validateMapping(target: EntityName, headers: string[], mapping: Record<string, string>) {
+  for (const field of requiredFields(target)) {
+    const header = mapping[field];
+    if (!header || !headers.includes(header)) {
+      return `Map a valid column to the required “${field.replace(/_/g, ' ')}” field.`;
+    }
+  }
+  for (const header of Object.values(mapping)) {
+    if (header && !headers.includes(header)) return 'A mapped column no longer exists. Load the data again.';
+  }
+  return null;
+}
+function mapRecord(target: EntityName, headers: string[], row: string[], mapping: Record<string, string>, userId?: string) {
+  const get = (field: string) => rowValue(row, headers, mapping, field);
+  const common = userId ? { user_id: userId } : {};
+  if (target === 'clients') {
+    const name = get('name');
+    return name ? { ...common, name, email: get('email') || null, phone: get('phone') || null, company: get('company') || null, address: get('address') || null, notes: get('notes') || null } : null;
+  }
+  if (target === 'invoices') {
+    const invoiceNumber = get('invoice_number');
+    const amount = parseAmount(get('amount'));
+    if (!invoiceNumber || amount === null || amount < 0) return null;
+    const validStatus = ['draft', 'pending', 'paid', 'overdue', 'cancelled'];
+    const status = get('status').toLowerCase();
+    return { ...common, invoice_number: invoiceNumber, amount, status: validStatus.includes(status) ? status : 'draft', issue_date: parseDate(get('issue_date')), due_date: get('due_date') ? parseDate(get('due_date')) : null, notes: get('notes') || null };
+  }
+  if (target === 'expenses') {
+    const description = get('description');
+    const amount = parseAmount(get('amount'));
+    if (!description || amount === null || amount < 0) return null;
+    return { ...common, description, category: get('category') || 'Other', amount, date: parseDate(get('date')), notes: get('notes') || null };
+  }
+  const product = get('product');
+  const total = parseAmount(get('total'));
+  if (!product || total === null || total < 0) return null;
+  const quantity = parseAmount(get('quantity')) || 1;
+  const validStatus = ['pending', 'processing', 'completed', 'cancelled'];
+  const status = get('status').toLowerCase();
+  return { ...common, product, quantity: Math.max(1, Math.floor(quantity)), total, status: validStatus.includes(status) ? status : 'pending', order_date: parseDate(get('order_date')), notes: get('notes') || null };
+}
 
 export function GoogleSheetsPage() {
   const { toast } = useToast();
-  const location = useLocation();
+  const { user } = useAuth();
   const navigate = useNavigate();
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [files, setFiles] = useState<SpreadsheetFile[]>([]);
-  const [connectedEmail, setConnectedEmail] = useState<string | null>(null);
-  const [nextPageToken, setNextPageToken] = useState<string | null>(null);
-  const [connecting, setConnecting] = useState(false);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [selectedName, setSelectedName] = useState<string | null>(null);
-  const [tabs, setTabs] = useState<SpreadsheetTab[] | null>(null);
-  const [tabsError, setTabsError] = useState<string | null>(null);
-  const [loadingTabs, setLoadingTabs] = useState(false);
-  const [selectedTab, setSelectedTab] = useState<string | null>(null);
-  const [preview, setPreview] = useState<SheetPreview | null>(null);
-  const [previewError, setPreviewError] = useState<string | null>(null);
-  const [loadingPreview, setLoadingPreview] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  const [headers, setHeaders] = useState<string[] | null>(null);
+  const [rows, setRows] = useState<string[][]>([]);
+  const [fileName, setFileName] = useState<string | null>(null);
+  const [fileError, setFileError] = useState<string | null>(null);
+  const [fileLoading, setFileLoading] = useState(false);
+  const [dragging, setDragging] = useState(false);
+
   const [importTarget, setImportTarget] = useState<EntityName>('clients');
   const [mapping, setMapping] = useState<Record<string, string>>({});
   const [importing, setImporting] = useState(false);
   const [importResult, setImportResult] = useState<{ imported: number; skipped?: number } | null>(null);
   const [importError, setImportError] = useState<string | null>(null);
   const [showImportConfirm, setShowImportConfirm] = useState(false);
-  useEffect(() => {
-    const params = new URLSearchParams(location.search);
-    const connected = params.get('connected');
-    const oauthError = params.get('error');
-    if (connected === 'true') {
-      navigate('/app/google-sheets', { replace: true });
-      toast('Google account connected successfully.', 'success');
-    }
-    if (oauthError) {
-      const messages: Record<string, string> = {
-        access_denied: 'Google authorization was denied.',
-        redirect_uri_mismatch: 'Google redirect URI mismatch. Contact support.',
-        authorization_failed: 'Google authorization failed.',
-        invalid_authorization: 'Invalid OAuth state. Please try again.',
-        expired_authorization: 'OAuth state expired. Please try again.',
-        token_exchange_failed: 'Token exchange failed. Please try again.',
-        connection_failed: 'Connection failed. Please try again.',
-        configuration_missing: 'Google Sheets is not configured.',
-      };
-      toast(messages[oauthError] || 'Connection failed.', 'error');
-      navigate('/app/google-sheets', { replace: true });
-    }
-  }, [location.search, navigate, toast]);
 
-  async function load(pageToken?: string) {
-    setLoading(true);
-    setError(null);
+  function resetMappingState() {
+    setImportTarget('clients');
+    setMapping({});
+    setImportResult(null);
+    setImportError(null);
+    setShowImportConfirm(false);
+  }
+
+  async function handleFile(file: File) {
+    resetMappingState();
+    setFileError(null);
+    setHeaders(null);
+    setRows([]);
+    setFileName(file.name);
+    const format = detectFormat(file);
+    if (!format) { setFileError('Upload a .csv, .xlsx, .xls, or .json file.'); return; }
+    if (file.size > MAX_BYTES) { setFileError('File is too large (max 10 MB).'); return; }
+    setFileLoading(true);
     try {
-      const result: SpreadsheetListResult = await listSpreadsheets(pageToken);
-      setFiles(pageToken ? (prev: SpreadsheetFile[]) => [...prev, ...result.files] : (result.files ?? []));
-      setConnectedEmail(result.connectedEmail ?? null);
-      setNextPageToken(result.nextPageToken ?? null);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Failed to load spreadsheets.';
-      setError(message);
-      if (pageToken) {
-        // Keep previously loaded spreadsheets on pagination failure.
+      let parsed: { headers: string[]; rows: string[][] };
+      if (format === 'json') {
+        parsed = parseJson(await file.text());
       } else {
-        setFiles([]);
+        parsed = parseWorkbook(await file.arrayBuffer(), format);
       }
-      if (/authorization|token|reconnect/i.test(message)) {
-        toast('Your Google authorization has expired. Please reconnect.', 'error');
+      if (!parsed.headers.length) throw new Error('This file has no header row. Add column headers and try again.');
+      if (parsed.rows.length > MAX_ROWS) {
+        throw new Error(`This file has more than ${MAX_ROWS.toLocaleString()} data rows. Split it into smaller imports.`);
       }
+      setHeaders(parsed.headers);
+      setRows(parsed.rows);
+      toast(`Loaded ${file.name}. Map columns to import.`, 'success');
+    } catch (err) {
+      setFileError(err instanceof Error ? err.message : 'Could not read this file.');
     } finally {
-      setLoading(false);
+      setFileLoading(false);
     }
   }
 
-  useEffect(() => { void load(); }, []);
-
-  async function connect() {
-    setConnecting(true);
-    try {
-      await startGoogleConnection();
-    } catch (err) {
-      toast(err instanceof Error ? err.message : 'Failed to start Google connection.', 'error');
-      setConnecting(false);
-    }
+  function onDrop(e: React.DragEvent<HTMLDivElement>) {
+    e.preventDefault();
+    setDragging(false);
+    const file = e.dataTransfer.files?.[0];
+    if (file) void handleFile(file);
   }
 
-  async function disconnect() {
-    try {
-      await disconnectGoogle();
-      setFiles([]);
-      setConnectedEmail(null);
-      setNextPageToken(null);
-      resetSelection();
-      toast('Google connection removed.');
-    } catch (err) {
-      toast(err instanceof Error ? err.message : 'Failed to disconnect.', 'error');
-    }
-  }
+  const previewRows = rows.slice(0, 20);
+  const mappingError = useMemo(() => {
+    if (!headers || !headers.length) return null;
+    return validateMapping(importTarget, headers, mapping);
+  }, [headers, importTarget, mapping]);
 
-  function resetSelection() {
-    setSelectedId(null);
-    setSelectedName(null);
-    setTabs(null);
-    setTabsError(null);
-    setLoadingTabs(false);
-    setSelectedTab(null);
-    setPreview(null);
-    setPreviewError(null);
-    setLoadingPreview(false);
-    setImportTarget('clients');
-    setMapping({});
-    setImportResult(null);
-    setImportError(null);
-    setShowImportConfirm(false);
+  function updateMapping(field: string, header: string) {
+    setMapping((prev) => ({ ...prev, [field]: header }));
   }
-
-  function selectSpreadsheet(file: SpreadsheetFile) {
-    const requestId = ++requestCounter;
-    activeRequestId = requestId;
-    setSelectedId(file.id);
-    setSelectedName(file.name);
-    setTabs(null);
-    setTabsError(null);
-    setLoadingTabs(true);
-    setSelectedTab(null);
-    setPreview(null);
-    setPreviewError(null);
-    setLoadingPreview(false);
-    setImportResult(null);
-    setImportError(null);
-    setShowImportConfirm(false);
-    setImportTarget('clients');
-    setMapping({});
-    toast(`Selected "${file.name}".`, 'success');
-    console.log('[ledgerly][diag] selectSpreadsheet start:', { fileId: file.id, fileName: file.name });
-    void (async () => {
-      try {
-        console.log('[ledgerly][diag] calling listTabs:', { spreadsheetIdPresent: Boolean(file.id) });
-        const result = await listTabs(file.id);
-        console.log('[ledgerly][diag] listTabs resolved:', { tabCount: (result.sheets ?? []).length });
-        if (requestId !== activeRequestId) return;
-        setTabs(result.sheets ?? []);
-      } catch (err) {
-        if (requestId !== activeRequestId) return;
-        console.log('[ledgerly][diag] listTabs error:', { error: err instanceof Error ? err.message : String(err) });
-        setTabsError(err instanceof Error ? err.message : 'Could not load sheet tabs.');
-        setTabs([]);
-      } finally {
-        if (requestId === activeRequestId) setLoadingTabs(false);
-      }
-    })();
-  }
-
-  function selectTab(tab: SpreadsheetTab) {
-    const requestId = ++requestCounter;
-    activeRequestId = requestId;
-    setSelectedTab(tab.title);
-    setPreview(null);
-    setPreviewError(null);
-    setLoadingPreview(true);
-    setImportResult(null);
-    setImportError(null);
-    setShowImportConfirm(false);
-    void (async () => {
-      try {
-        const result = await previewSheet(selectedId ?? '', tab.title);
-        if (requestId !== activeRequestId) return;
-        setPreview(result);
-      } catch (err) {
-        if (requestId !== activeRequestId) return;
-        setPreviewError(err instanceof Error ? err.message : 'Could not preview this sheet.');
-        setPreview(null);
-      } finally {
-        if (requestId === activeRequestId) setLoadingPreview(false);
-      }
-    })();
-  }
-
-  function updateMapping(header: string, field: string) {
-    setMapping((prev) => {
-      const next: Record<string, string> = {};
-      for (const key of Object.keys(prev)) {
-        if (prev[key] === header && key !== field) next[key] = '';
-        else next[key] = prev[key];
-      }
-      next[field] = header;
-      return next;
-    });
-  }
-
-  function clearMapping(header: string) {
-    setMapping((prev) => {
-      const next: Record<string, string> = { ...prev };
-      for (const key of Object.keys(next)) {
-        if (next[key] === header) next[key] = '';
-      }
-      return next;
-    });
-  }
-
-  function isMappingComplete() {
-    const required = entityFields[importTarget];
-    return required.every((field) => Boolean((mapping[field] || '').trim()));
-  }
+  function resetMapping() { setMapping({}); setImportResult(null); setImportError(null); }
 
   function startImport() {
-    if (!isMappingComplete()) {
-      setImportError('Map every required spreadsheet column before importing.');
-      return;
-    }
+    if (mappingError) { setImportError(mappingError); return; }
+    if (!headers || !headers.length) { setImportError('Load a file with a header row before importing.'); return; }
     setImportError(null);
     setImportResult(null);
     setShowImportConfirm(true);
   }
 
   async function confirmImport() {
-    if (!selectedId || !selectedName || !selectedTab) return;
-    if (!isMappingComplete()) {
-      setImportError('Map every required spreadsheet column before importing.');
-      return;
-    }
+    if (mappingError || !headers) { setImportError(mappingError || 'Load a file before importing.'); setShowImportConfirm(false); return; }
     setImporting(true);
     setImportError(null);
     setImportResult(null);
     try {
-      const result = await syncSheet({
-        spreadsheetId: selectedId,
-        spreadsheetName: selectedName,
-        sheetName: selectedTab,
-        target: importTarget,
-        mapping,
-      });
-      setImportResult(result);
-      toast(`Imported ${result.imported} row(s).`, 'success');
-      window.dispatchEvent(new CustomEvent('ledgerly:data-updated'));
+      const dataRows = rows.filter((row) => row.some((cell) => String(cell || '').trim()));
+      const records = dataRows
+        .map((row) => mapRecord(importTarget, headers, row, mapping, user?.id))
+        .filter((record): record is NonNullable<typeof record> => record !== null);
+      let imported = 0;
+      let skipped = Math.max(dataRows.length - records.length, 0);
+      for (const record of records) {
+        try {
+          await createEntity(importTarget, record as Record<string, unknown>, user?.id);
+          imported += 1;
+        } catch {
+          skipped += 1;
+        }
+      }
+      setImportResult({ imported, skipped });
+      if (imported > 0) {
+        toast(`Imported ${imported} row(s).`, 'success');
+        window.dispatchEvent(new CustomEvent('ledgerly:data-updated'));
+        navigate('/app/dashboard');
+        return;
+      }
+      toast('No valid rows were imported. Check your mapping and data.', 'error');
     } catch (err) {
-      setImportError(err instanceof Error ? err.message : 'Import failed.');
-      toast(err instanceof Error ? err.message : 'Import failed.', 'error');
+      const message = err instanceof Error ? err.message : 'Import failed.';
+      setImportError(message);
+      toast(message, 'error');
     } finally {
       setImporting(false);
       setShowImportConfirm(false);
     }
   }
+  function cancelImport() { if (!importing) setShowImportConfirm(false); }
 
-  function cancelImport() {
-    if (importing) return;
-    setShowImportConfirm(false);
-  }
+  const activeLabel = fileName || 'File';
 
-  function goBack() {
-    resetSelection();
-    setSelectedId(null);
-    setSelectedName(null);
-  }
   return (
     <main className="page-wrap">
       <div className="page-heading">
         <div>
           <p className="eyebrow">Integrations</p>
-          <h1 className="page-title">Google Sheets</h1>
-          <p className="page-subtitle">Connect your Google account to import spreadsheet data.</p>
+          <h1 className="page-title">Data Import</h1>
+          <p className="page-subtitle">Upload a CSV, Excel, or JSON file, map columns, and import data into your workspace.</p>
         </div>
       </div>
-      {error && <div className="notice" style={{ marginBottom: 18 }}>{error}</div>}
-      {connectedEmail && (
-        <div className="notice" style={{ marginBottom: 18, borderColor: '#2db47a' }}>
-          Connected Google account: <strong>{connectedEmail}</strong>
+
+      <section className="card" style={{ padding: 20, marginBottom: 18 }}>
+        <p className="eyebrow" style={{ margin: 0 }}>Import from file</p>
+        <p className="muted" style={{ margin: '6px 0 12px', fontSize: 12 }}>Drag and drop or choose a <strong>.csv</strong>, <strong>.xlsx</strong>, <strong>.xls</strong>, or <strong>.json</strong> file (max 10 MB, 5,000 data rows). First row must be headers (or JSON array of objects).</p>
+        <div
+          role="button"
+          tabIndex={0}
+          onClick={() => fileInputRef.current?.click()}
+          onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') fileInputRef.current?.click(); }}
+          onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
+          onDragLeave={() => setDragging(false)}
+          onDrop={onDrop}
+          style={{ border: `2px dashed ${dragging ? '#2db47a' : '#d7deea'}`, borderRadius: 10, padding: 18, textAlign: 'center', cursor: 'pointer', background: dragging ? '#f2fbf7' : '#fafbfc' }}
+        >
+          <p style={{ margin: 0, fontSize: 13 }}><strong>Drop a file here</strong> or click to choose</p>
+          <p className="muted" style={{ margin: '6px 0 0', fontSize: 11 }}>Supported: CSV, Excel (.xlsx, .xls), JSON</p>
+          {fileName && <p className="muted" style={{ margin: '6px 0 0', fontSize: 11 }}>Selected: {fileName}</p>}
         </div>
-      )}
-      <section className="card" style={{ padding: 20 }}>
-        {loading ? (
-          <p>Loading spreadsheets…</p>
-        ) : files.length === 0 ? (
-          <div className="empty-state">
-            <p>No Google Sheets spreadsheets found.</p>
-            <p className="muted">Create a spreadsheet in Google Drive, then connect another account, or start with a blank sheet.</p>
-            <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
-              <button className="button button-primary" onClick={() => void connect()} disabled={connecting}>
-                {connecting ? 'Connecting...' : 'Connect Google'}
-              </button>
-              <button className="button" onClick={() => void disconnect()}>Disconnect</button>
-            </div>
-          </div>
-        ) : (
-          <div className="sheet-list">
-            <p style={{ marginTop: 0 }}>{files.length} spreadsheet(s) available.</p>
-            <ul className="sheet-list-items" style={{ listStyle: 'none', padding: 0, margin: '12px 0' }}>
-              {files.map((file) => (
-                <li key={file.id} style={{ marginBottom: 8 }}>
-                  <button
-                    className={`button ${selectedId === file.id ? 'button-primary' : 'button'}`}
-                    onClick={() => selectSpreadsheet(file)}
-                    style={{ width: '100%', justifyContent: 'flex-start' }}
-                  >
-                    <span>{file.name}</span>
-                    {file.modifiedTime && <span className="muted" style={{ marginLeft: 8, fontSize: 11 }}>{new Date(file.modifiedTime).toLocaleDateString()}</span>}
-                  </button>
-                </li>
-              ))}
-            </ul>
-            <div style={{ display: 'flex', gap: 8, marginTop: 12, flexWrap: 'wrap' }}>
-              <button className="button button-primary" onClick={() => void connect()} disabled={connecting}>
-                {connecting ? 'Connecting...' : 'Connect Google'}
-              </button>
-              <button className="button" onClick={() => void disconnect()}>Disconnect</button>
-              {nextPageToken && (
-                <button className="button" onClick={() => void load(nextPageToken)} disabled={loading}>
-                  Load more
-                </button>
-              )}
-            </div>
-          </div>
-        )}
+        <input ref={fileInputRef} type="file" accept={ACCEPT} style={{ display: 'none' }} onChange={(e) => { const f = e.target.files?.[0]; if (f) void handleFile(f); e.target.value = ''; }} />
+        {fileError && <div className="notice" style={{ marginTop: 12, borderColor: '#e95f67' }}>{fileError}</div>}
       </section>
 
-      {selectedId && selectedName && (
-        <section className="card" style={{ padding: 20, marginTop: 18 }}>
+      {(fileLoading || (headers && headers.length > 0)) && (
+        <section className="card" style={{ padding: 20, marginTop: 0 }}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', marginBottom: 16 }}>
             <div>
-              <p className="eyebrow" style={{ margin: 0 }}>Selected spreadsheet</p>
-              <h3 style={{ margin: '4px 0 0', fontSize: 15 }}>{selectedName}</h3>
+              <p className="eyebrow" style={{ margin: 0 }}>Preview & map</p>
+              <h3 style={{ margin: '4px 0 0', fontSize: 15 }}>{activeLabel}</h3>
             </div>
-            <button className="button button-ghost" onClick={goBack}>Choose another spreadsheet</button>
+            <span className="muted" style={{ fontSize: 11 }}>{headers ? `${rows.length} data row(s) available` : ''}</span>
           </div>
 
-          {loadingTabs ? (
-            <p>Loading sheet tabs…</p>
-          ) : tabsError ? (
-            <div className="notice" style={{ borderColor: '#e95f67' }}>{tabsError}</div>
-          ) : tabs && tabs.length === 0 ? (
-            <p className="muted">This spreadsheet has no tabs. Add a sheet and try again.</p>
-          ) : (
-            <div>
-              <p className="muted" style={{ marginTop: 0, marginBottom: 10 }}>Select a tab to preview its contents.</p>
-              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                {tabs?.map((tab) => (
-                  <button
-                    key={tab.id}
-                    className={`button ${selectedTab === tab.title ? 'button-primary' : 'button-secondary'}`}
-                    onClick={() => selectTab(tab)}
-                    disabled={loadingPreview}
-                  >
-                    {tab.title}
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
-        </section>
-      )}
-      {selectedTab && (
-        <section className="card" style={{ padding: 20, marginTop: 18 }}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', marginBottom: 16 }}>
-            <div>
-              <p className="eyebrow" style={{ margin: 0 }}>Preview</p>
-              <h3 style={{ margin: '4px 0 0', fontSize: 15 }}>{selectedTab}</h3>
-            </div>
-            <span className="muted" style={{ fontSize: 11 }}>{preview ? `${preview.totalRows} data row(s) available` : ''}</span>
-          </div>
-
-          {loadingPreview ? (
-            <p>Loading preview…</p>
-          ) : previewError ? (
-            <div className="notice" style={{ borderColor: '#e95f67' }}>{previewError}</div>
-          ) : !preview || !preview.headers.length ? (
+          {fileLoading ? (
+            <p>Loading file…</p>
+          ) : !headers || !headers.length ? (
             <div className="empty-state">
-              <p>This sheet is empty or has no header row.</p>
-              <p className="muted">Add column headers to the top row of the sheet, then preview again.</p>
+              <p>This file is empty or has no header row.</p>
+              <p className="muted">Add column headers to the first row, then try again.</p>
             </div>
           ) : (
             <div>
               <p className="muted" style={{ marginTop: 0, marginBottom: 10, fontSize: 11 }}>
-                Showing a preview of the first {preview.rows.length} row(s). Map your columns, then import the full sheet.
+                Showing a preview of the first {previewRows.length} row(s). Map your columns, then import.
               </p>
               <div className="table-scroll" style={{ border: '1px solid #e8ebf1', borderRadius: 8, overflow: 'hidden' }}>
                 <table style={{ margin: 0 }}>
                   <thead>
-                    <tr>
-                      {preview.headers.map((header, index) => (
-                        <th key={`${header}-${index}`}>{header || `Column ${index + 1}`}</th>
-                      ))}
-                    </tr>
+                    <tr>{headers.map((h, i) => (<th key={`${h}-${i}`}>{h || `Column ${i + 1}`}</th>))}</tr>
                   </thead>
                   <tbody>
-                    {preview.rows.map((row, rowIndex) => (
-                      <tr key={`row-${rowIndex}`}>
-                        {preview.headers.map((header, colIndex) => (
-                          <td key={`cell-${rowIndex}-${colIndex}`}>{row[colIndex] ?? ''}</td>
-                        ))}
-                      </tr>
+                    {previewRows.map((row, ri) => (
+                      <tr key={`r-${ri}`}>{headers.map((_, ci) => (<td key={`c-${ri}-${ci}`}>{row[ci] ?? ''}</td>))}</tr>
                     ))}
                   </tbody>
                 </table>
               </div>
 
               <div style={{ marginTop: 18 }}>
-                <p className="muted" style={{ marginTop: 0, marginBottom: 10, fontSize: 11, textTransform: 'uppercase', letterSpacing: '.08em' }}>
-                  Map spreadsheet columns to Ledgerly fields
-                </p>
-                <p className="muted" style={{ marginTop: 0, marginBottom: 12, fontSize: 11 }}>
-                  Select which spreadsheet column supplies each required field. Leave unmapped fields blank.
-                </p>
+                <p className="muted" style={{ marginTop: 0, marginBottom: 10, fontSize: 11, textTransform: 'uppercase', letterSpacing: '.08em' }}>Map columns to Ledgerly fields</p>
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: 10 }}>
                   {ENTITY_OPTIONS.map((option) => (
                     <div key={option.value} style={{ border: '1px solid #e8ebf1', borderRadius: 8, padding: '10px 12px' }}>
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
                         <label style={{ fontSize: 11, fontWeight: 700, color: '#556274' }}>{option.label}</label>
-                        <input
-                          type="radio"
-                          name={`entity-${option.value}`}
-                          checked={importTarget === option.value}
-                          onChange={() => { setImportTarget(option.value); setMapping({}); setImportResult(null); setImportError(null); }}
-                        />
+                        <input type="radio" name="import-target" checked={importTarget === option.value} onChange={() => { setImportTarget(option.value); setMapping({}); setImportResult(null); setImportError(null); }} />
                       </div>
                       {entityFields[option.value].map((field) => (
                         <div key={field} style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 6 }}>
                           <label style={{ fontSize: 10, color: '#677487', flex: '0 0 auto', whiteSpace: 'nowrap' }}>{field}</label>
-                          <select
-                            className="form-select"
-                            style={{ padding: '6px 8px', fontSize: 10 }}
-                            value={mapping[field] || ''}
-                            onChange={(event) => updateMapping(event.target.value, field)}
-                          >
+                          <select className="form-select" style={{ padding: '6px 8px', fontSize: 10 }} value={mapping[field] || ''} onChange={(e) => updateMapping(field, e.target.value)}>
                             <option value="">— Not mapped —</option>
-                            {preview.headers.map((header, index) => (
-                              <option key={`${header}-${index}`} value={header}>{header || `Column ${index + 1}`}</option>
-                            ))}
+                            {headers.map((h, i) => (<option key={`${h}-${i}`} value={h}>{h || `Column ${i + 1}`}</option>))}
                           </select>
                         </div>
                       ))}
@@ -448,11 +363,9 @@ export function GoogleSheetsPage() {
                   ))}
                 </div>
                 <div style={{ marginTop: 16, display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-                  <button className="button button-primary" onClick={startImport} disabled={importing || !isMappingComplete()}>
-                    Import Data
-                  </button>
-                  <button className="button button-ghost" onClick={() => { setMapping({}); setImportResult(null); setImportError(null); }}>Reset mapping</button>
-                  {!isMappingComplete() && <span className="muted" style={{ fontSize: 11 }}>Map every required column before importing.</span>}
+                  <button className="button button-primary" onClick={startImport} disabled={importing || !!mappingError}>Import Data</button>
+                  <button className="button button-ghost" onClick={resetMapping}>Reset mapping</button>
+                  {mappingError && <span className="muted" style={{ fontSize: 11 }}>{mappingError}</span>}
                 </div>
               </div>
             </div>
@@ -462,36 +375,32 @@ export function GoogleSheetsPage() {
 
       {importResult && (
         <div className="notice" style={{ marginTop: 18, borderColor: '#2db47a' }}>
-          Import complete: <strong>{importResult.imported}</strong> row(s) imported
-          {typeof importResult.skipped === 'number' ? ` and <strong>{importResult.skipped}</strong> row(s) skipped` : ''}.
+          Import complete: <strong>{importResult.imported}</strong> row(s) imported{typeof importResult.skipped === 'number' ? <> and <strong>{importResult.skipped}</strong> row(s) skipped</> : ''}.
         </div>
       )}
-      {importError && (
-        <div className="notice" style={{ marginTop: 18, borderColor: '#e95f67' }}>{importError}</div>
-      )}
+      {importError && <div className="notice" style={{ marginTop: 18, borderColor: '#e95f67' }}>{importError}</div>}
+
       {showImportConfirm && (
         <div className="modal-backdrop">
           <div className="modal" role="dialog" aria-labelledby="import-confirm-title">
             <div className="modal-header">
               <div>
                 <h3 id="import-confirm-title" className="modal-title">Confirm import</h3>
-                <p className="modal-subtitle">This will push spreadsheet data into your Ledgerly workspace.</p>
+                <p className="modal-subtitle">This will add data to your Ledgerly workspace.</p>
               </div>
               <button className="icon-button" onClick={cancelImport} aria-label="Close" disabled={importing}>&times;</button>
             </div>
             <div className="modal-body">
               <p style={{ margin: 0, fontSize: 12, lineHeight: 1.6, color: '#556274' }}>
-                Import <strong>{selectedName}</strong> from the <strong>{selectedTab}</strong> tab into <strong>{ENTITY_OPTIONS.find((option) => option.value === importTarget)?.label}</strong>.
+                Import <strong>{activeLabel}</strong> into <strong>{ENTITY_OPTIONS.find((o) => o.value === importTarget)?.label}</strong>.
               </p>
               <p style={{ margin: '10px 0 0', fontSize: 11, color: '#718096' }}>
-                Rows that do not match the required columns will be skipped. This action cannot be undone automatically.
+                Rows that do not match the required columns will be skipped. On success you will be redirected to the dashboard.
               </p>
             </div>
             <div className="form-actions">
               <button className="button button-secondary" onClick={cancelImport} disabled={importing}>Cancel</button>
-              <button className="button button-primary" onClick={confirmImport} disabled={importing}>
-                {importing ? 'Importing…' : 'Confirm import'}
-              </button>
+              <button className="button button-primary" onClick={() => void confirmImport()} disabled={importing}>{importing ? 'Importing…' : 'Confirm import'}</button>
             </div>
           </div>
         </div>
@@ -499,7 +408,10 @@ export function GoogleSheetsPage() {
     </main>
   );
 }
+
 export default GoogleSheetsPage;
+
+
 
 
 

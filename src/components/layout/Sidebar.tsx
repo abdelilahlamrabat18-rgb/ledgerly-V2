@@ -1,4 +1,4 @@
-import { Activity, ArrowLeftRight, BarChart3, BriefcaseBusiness, FileSpreadsheet, FileText, LayoutDashboard, LogOut, Package, Receipt, Settings, X } from 'lucide-react';
+import { Activity, ArrowLeftRight, BriefcaseBusiness, FileSpreadsheet, FileText, LayoutDashboard, LogOut, Package, Receipt, Settings, X } from 'lucide-react';
 import { NavLink } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
 import { useBilling } from '../../context/BillingContext';
@@ -27,7 +27,7 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
   }
   return <aside className={`app-sidebar ${open ? 'open' : ''}`}>
     <button className="icon-button mobile-menu" onClick={onClose} aria-label="Close navigation"><X size={20} /></button>
-    <div className="brand"><span className="brand-mark"><BarChart3 size={17} /></span><span>ledgerly</span></div>
+    <div className="brand"><span className="brand-mark"><img src="/logo.png" alt="Ledgerly" /></span><span>ledgerly</span></div>
     <p className="nav-label">Workspace</p>
     <nav className="nav-list">
       {navItems.map(({ to, label, icon: Icon, end }) => <NavLink key={to} to={to} end={end} className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`} onClick={onClose}><Icon /><span>{label}</span></NavLink>)}

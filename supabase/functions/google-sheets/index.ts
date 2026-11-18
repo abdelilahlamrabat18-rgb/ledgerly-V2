@@ -40,9 +40,37 @@ async function googleAccessToken(refreshToken: string) {
   return data.access_token as string;
 }
 async function googleGet(path: string, token: string) {
-  const response = await fetch(`https://www.googleapis.com/${path}`, { headers: { Authorization: `Bearer ${token}` } });
-  const data = await response.json();
-  if (!response.ok) throw new Error(data.error?.message || 'Google Sheets returned an error. Check the file permissions and try again.');
+  const url = `https://sheets.googleapis.com/${path}`;
+  const response = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+  const text = await response.text();
+  let data: unknown = undefined;
+  try { data = JSON.parse(text); } catch {}
+  if (!response.ok) {
+    const urlForLog = url.split('?')[0];
+    console.error('[google-sheets] Google API request failed:', { url: urlForLog, status: response.status, body: text.slice(0, 500) });
+
+    const googleError = data && typeof data === 'object' && 'error' in data && typeof (data as { error?: unknown }).error === 'object'
+      ? (data as { error: { message?: string; code?: string; errors?: Array<{ reason?: string; domain?: string }> } }).error
+      : undefined;
+
+    const googleMessage = googleError?.message;
+    const googleReason = googleError?.errors?.[0]?.reason;
+    const googleDomain = googleError?.errors?.[0]?.domain;
+
+    let message = googleMessage || `Google Sheets request failed (HTTP ${response.status}).`;
+    if (response.status === 400) {
+      message = 'The spreadsheet or sheet could not be read. Check the spreadsheet ID and sheet tab, then try again.';
+    } else if (response.status === 403) {
+      message = 'Access to this spreadsheet was denied. Make sure it is shared with the connected Google account and the Google Sheets API is enabled.';
+    } else if (response.status === 404) {
+      message = 'Spreadsheet or sheet tab not found. Check the spreadsheet ID and selected tab name.';
+    }
+    const err = new Error(message);
+    (err as Error & { status?: number; reason?: string; domain?: string }).status = response.status;
+    if (googleReason) (err as Error & { status?: number; reason?: string; domain?: string }).reason = googleReason;
+    if (googleDomain) (err as Error & { status?: number; reason?: string; domain?: string }).domain = googleDomain;
+    throw err;
+  }
   return data;
 }
 function json(body: unknown, status = 200) {
@@ -81,11 +109,11 @@ function validateMapping(target: Target, headers: string[], mapping: Record<stri
   for (const field of required) {
     const header = mapping[field];
     if (typeof header !== 'string' || !headers.includes(header)) {
-      throw new Error(`Map a valid spreadsheet column to the required “${field.replaceAll('_', ' ')}” field.`);
+      throw new Error(`Map a valid column to the required “${field.replaceAll('_', ' ')}” field.`);
     }
   }
   for (const header of Object.values(mapping)) {
-    if (typeof header !== 'string' || !headers.includes(header)) throw new Error('A mapped spreadsheet column no longer exists. Preview the sheet again.');
+    if (typeof header !== 'string' || !headers.includes(header)) throw new Error('A mapped column no longer exists. Load the data again.');
   }
 }
 function rowValue(row: string[], headers: string[], mapping: Record<string, unknown>, field: string) {
@@ -229,49 +257,25 @@ Deno.serve(async (req) => {
       return json({ disconnected: true });
     }
 
-    const { data: secret, error: secretError } = await admin.from('google_connection_secrets').select('refresh_token_ciphertext').eq('user_id', user.id).maybeSingle();
-    if (secretError) throw new Error('Your Google connection could not be loaded. Please reconnect Google Sheets.');
-    if (!secret) return json({ error: 'Connect Google Sheets before loading spreadsheets.' }, 400);
-    const token = await googleAccessToken(await decrypt(secret.refresh_token_ciphertext));
+    if (body.action === 'sync') {
+      const spreadsheetId = typeof body.spreadsheetId === 'string' ? body.spreadsheetId.trim() : '';
+      const sheetName = typeof body.sheetName === 'string' ? body.sheetName.trim() : '';
+      if (!spreadsheetId || !sheetName) return json({ error: 'Provide a spreadsheet ID and sheet tab name.' }, 400);
+      const { data: secret, error: secretError } = await admin.from('google_connection_secrets').select('refresh_token_ciphertext').eq('user_id', user.id).maybeSingle();
+      if (secretError) throw new Error('Your Google connection could not be loaded. Please reconnect Google Sheets.');
+      if (!secret) return json({ error: 'Connect Google Sheets before importing.' }, 400);
+      const token = await googleAccessToken(await decrypt(secret.refresh_token_ciphertext));
 
-    if (body.action === 'list-spreadsheets') {
-      const pageToken = typeof body.pageToken === 'string' ? body.pageToken : undefined;
-      const params = new URLSearchParams({
-        pageSize: '100',
-        orderBy: 'modifiedTime desc',
-        fields: 'files(id,name,modifiedTime,webViewLink),nextPageToken',
-        q: "mimeType='application/vnd.google-apps.spreadsheet' and trashed=false",
-      });
-      if (pageToken) params.set('pageToken', pageToken);
-      const result = await googleGet(`drive/v3/files?${params.toString()}`, token);
-      const { data: connection } = await admin.from('google_connections').select('connected_email').eq('user_id', user.id).maybeSingle();
-      return json({ files: result.files || [], nextPageToken: result.nextPageToken || null, connectedEmail: connection?.connected_email || null });
-    }
-
-    if (body.action === 'list-tabs') {
-      if (typeof body.spreadsheetId !== 'string' || !body.spreadsheetId.trim()) return json({ error: 'Select a spreadsheet first.' }, 400);
-      const result = await googleGet(`sheets/v4/spreadsheets/${encodeURIComponent(body.spreadsheetId)}?fields=sheets(properties(sheetId,title,gridProperties(rowCount,columnCount)))`, token);
-      return json({ sheets: (result.sheets || []).map((sheet: { properties: { sheetId: number; title: string; gridProperties?: { rowCount?: number; columnCount?: number } } }) => ({ id: sheet.properties.sheetId, title: sheet.properties.title, rowCount: sheet.properties.gridProperties?.rowCount, columnCount: sheet.properties.gridProperties?.columnCount })) });
-    }
-
-    if (body.action === 'preview' || body.action === 'sync') {
-      if (typeof body.spreadsheetId !== 'string' || !body.spreadsheetId.trim() || typeof body.sheetName !== 'string' || !body.sheetName.trim()) {
-        return json({ error: 'Select a spreadsheet and sheet tab first.' }, 400);
-      }
-      const isSync = body.action === 'sync';
-      const range = sheetRange(body.sheetName, isSync ? 5002 : 501);
-      const result = await googleGet(`sheets/v4/spreadsheets/${encodeURIComponent(body.spreadsheetId)}/values/${range}`, token);
+      const range = sheetRange(sheetName, 5002);
+      const result = await googleGet(`v4/spreadsheets/${encodeURIComponent(spreadsheetId)}/values/${range}`, token) as { values?: unknown[][] };
       const values = (result.values || []) as unknown[][];
       if (!values.length || !values[0].some((value) => String(value ?? '').trim())) return json({ error: 'This sheet is empty or has no header row. Add column headers and try again.' }, 400);
-      if (isSync && values.length > 5001) return json({ error: 'This sheet has more than 5,000 data rows. Split it into smaller imports for the MVP.' }, 400);
+      if (values.length > 5001) return json({ error: 'This sheet has more than 5,000 data rows. Split it into smaller imports for the MVP.' }, 400);
       const headers = values[0].map((value) => String(value ?? '').trim());
-      if (!isSync) {
-        return json({ headers, rows: values.slice(1, 21).map((row) => (row as unknown[]).map((cell) => String(cell ?? ''))), totalRows: Math.max(values.length - 1, 0) });
-      }
 
       if (!allowedTargets.includes(body.target as Target)) return json({ error: 'Choose a supported import type.' }, 400);
       const mapping = body.mapping;
-      if (!mapping || typeof mapping !== 'object' || Array.isArray(mapping)) return json({ error: 'Map your spreadsheet columns before importing.' }, 400);
+      if (!mapping || typeof mapping !== 'object' || Array.isArray(mapping)) return json({ error: 'Map your columns before importing.' }, 400);
       const target = body.target as Target;
       validateMapping(target, headers, mapping as Record<string, unknown>);
       const dataRows = values.slice(1) as unknown[][];
@@ -285,7 +289,7 @@ Deno.serve(async (req) => {
         const { error } = await admin.from(target).insert(records as never[]);
         if (error) throw new Error(`Import failed: ${error.message}`);
       }
-      const { error: connectionError } = await admin.from('google_connections').update({ spreadsheet_id: body.spreadsheetId, spreadsheet_name: String(body.spreadsheetName || ''), selected_sheet: body.sheetName }).eq('user_id', user.id);
+      const { error: connectionError } = await admin.from('google_connections').update({ spreadsheet_id: spreadsheetId, spreadsheet_name: String(body.spreadsheetName || ''), selected_sheet: sheetName }).eq('user_id', user.id);
       if (connectionError) console.warn('[google-sheets] Imported data, but spreadsheet metadata was not updated:', connectionError.message);
       return json({ imported: records.length, skipped: Math.max(dataRows.length - records.length, 0) });
     }
@@ -293,7 +297,13 @@ Deno.serve(async (req) => {
     return json({ error: 'Unsupported Google Sheets action.' }, 400);
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Unable to process your Google Sheet.';
-    console.error('[google-sheets] Request failed:', message);
-    return json({ error: message }, 500);
+    const errorStatus = error instanceof Error ? (error as Error & { status?: number }).status : undefined;
+    const errorReason = error instanceof Error ? (error as Error & { reason?: string }).reason : undefined;
+    const errorDomain = error instanceof Error ? (error as Error & { domain?: string }).domain : undefined;
+    const status = typeof errorStatus === 'number' ? errorStatus : 500;
+    console.error('[google-sheets] Request failed:', { message, status, reason: errorReason, domain: errorDomain });
+    return json({ error: message, reason: errorReason, domain: errorDomain }, status);
   }
 });
+
+

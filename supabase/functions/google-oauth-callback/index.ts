@@ -114,7 +114,7 @@ Deno.serve(async (req) => {
       user_id: stateData.uid,
       provider: 'google',
       connected_email: userInfo.email || null,
-      scopes: ['https://www.googleapis.com/auth/drive.readonly', 'https://www.googleapis.com/auth/spreadsheets.readonly'],
+      scopes: ['https://www.googleapis.com/auth/spreadsheets.readonly'],
     }, { onConflict: 'user_id' });
     if (metadataError) throw new Error(`Google connection metadata could not be saved: ${metadataError.message}`);
 

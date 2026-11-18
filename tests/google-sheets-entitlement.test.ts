@@ -69,4 +69,12 @@ describe('google-sheets entitlement enforcement', () => {
       .map((s) => s.trim().replace(/^['"]|['"]$/g, ''));
     expect(members).toContain('no_provider');
   });
+
+  it('does not use Google Drive discovery APIs or URL/ID ingestion', () => {
+    expect(fn).not.toMatch(/list-spread/);
+    expect(fn).not.toMatch(/drive\/v3/);
+    expect(fn).not.toMatch(/drive\.readonly/);
+    expect(fn).not.toMatch(/extractSpreadsheetId/);
+    expect(fn).not.toMatch(/list-tabs/);
+  });
 });
