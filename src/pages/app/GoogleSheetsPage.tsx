@@ -321,6 +321,7 @@ export function GoogleSheetsPage() {
         toast(`Imported ${imported} row(s).`, 'success');
         window.dispatchEvent(new Event('ledgerly:data-updated'));
         navigate('/app/dashboard');
+        setTimeout(() => window.dispatchEvent(new Event('ledgerly:data-updated')), 150);
         return;
       }
       toast('No valid rows were imported. Check your mapping and data.', 'error');
