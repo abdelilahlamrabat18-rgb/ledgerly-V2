@@ -49,23 +49,74 @@ export async function createEntity<T>(entity: EntityName, payload: Record<string
   if (!requireRemote()) {
     const item = { ...payload, id: `${entity}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, user_id: userId || 'demo', created_at: new Date().toISOString(), updated_at: new Date().toISOString() };
     demoStore[entity].unshift(item);
+    console.log('[ledgerly][import] demo insert', { table: entity, userId: item.user_id, payload, response: item });
     return item as T;
   }
   try {
-    let resolvedUserId = userId;
-    if (!resolvedUserId) {
-      const { data } = await supabase.auth.getUser();
-      resolvedUserId = data.user?.id;
+    const { data: authData, error: authError } = await supabase.auth.getUser();
+    if (authError) {
+      console.error('[ledgerly][import] supabase.auth.getUser error', { table: entity, error: authError });
     }
-    const record = resolvedUserId && !('user_id' in payload) ? { ...payload, user_id: resolvedUserId } : payload;
-    if (resolvedUserId && !record.user_id) (record as Record<string, unknown>).user_id = resolvedUserId;
+    const resolvedUserId = authData?.user?.id || userId;
+    if (!resolvedUserId) {
+      const err = new Error('Cannot import: authenticated user ID is missing. Please sign in again.');
+      console.error('[ledgerly][import] missing user id', { table: entity, userIdArg: userId, authUserId: authData?.user?.id, payload });
+      throw err;
+    }
+    const record = { ...payload, user_id: resolvedUserId };
+    console.log('[ledgerly][import] inserting', { table: entity, userId: resolvedUserId, payload: record });
     const { data, error } = await supabase.from(entity).insert(record as never).select().single();
-    if (error) throw error;
+    if (error) {
+      console.error('[ledgerly][import] supabase insert error', { table: entity, userId: resolvedUserId, payload: record, error });
+      throw error;
+    }
+    console.log('[ledgerly][import] supabase insert success', { table: entity, userId: resolvedUserId, payload: record, response: data });
     return data as T;
   } catch (error) {
+    console.error('[ledgerly][import] createEntity failed', { table: entity, userIdArg: userId, payload, error });
     throw toDataError(error);
   }
 }
+
+export async function createEntitiesBatch<T>(entity: EntityName, payloads: Record<string, unknown>[], userId?: string): Promise<T[]> {
+  if (!payloads.length) return [];
+  if (!requireRemote()) {
+    const items = payloads.map((payload, index) => ({ ...payload, id: `${entity}-${Date.now()}-${index}`, user_id: userId || 'demo', created_at: new Date().toISOString(), updated_at: new Date().toISOString() }));
+    demoStore[entity].unshift(...items);
+    console.log('[ledgerly][import] demo batch insert', { table: entity, userId: userId || 'demo', count: items.length });
+    return items as T[];
+  }
+  try {
+    const { data: authData, error: authError } = await supabase.auth.getUser();
+    if (authError) console.error('[ledgerly][import] auth.getUser error', { table: entity, error: authError });
+    const resolvedUserId = authData?.user?.id || userId;
+    if (!resolvedUserId) {
+      const err = new Error('Cannot import: authenticated user ID is missing. Please sign in again.');
+      console.error('[ledgerly][import] missing user id (batch)', { table: entity, userIdArg: userId, authUserId: authData?.user?.id });
+      throw err;
+    }
+    const records = payloads.map((payload) => ({ ...payload, user_id: resolvedUserId }));
+    console.log('[ledgerly][import] batch inserting', { table: entity, userId: resolvedUserId, count: records.length, sample: records[0] ?? null });
+    const inserted: T[] = [];
+    const chunkSize = 500;
+    for (let i = 0; i < records.length; i += chunkSize) {
+      const chunk = records.slice(i, i + chunkSize);
+      const { data, error } = await supabase.from(entity).insert(chunk as never).select();
+      if (error) {
+        console.error('[ledgerly][import] batch insert error', { table: entity, userId: resolvedUserId, chunkIndex: i, chunkSize: chunk.length, error });
+        throw error;
+      }
+      if (data) inserted.push(...(data as T[]));
+      console.log('[ledgerly][import] batch chunk inserted', { table: entity, userId: resolvedUserId, chunkIndex: i, inserted: data?.length ?? 0 });
+    }
+    console.log('[ledgerly][import] batch insert success', { table: entity, userId: resolvedUserId, totalInserted: inserted.length });
+    return inserted;
+  } catch (error) {
+    console.error('[ledgerly][import] createEntitiesBatch failed', { table: entity, userIdArg: userId, count: payloads.length, error });
+    throw toDataError(error);
+  }
+}
+
 
 export async function updateEntity<T>(entity: EntityName, id: string, payload: Record<string, unknown>): Promise<T> {
   if (!requireRemote()) {

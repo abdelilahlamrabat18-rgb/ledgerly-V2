@@ -13,7 +13,7 @@ const navItems = [
   { to: '/app/invoices', label: 'Invoices', icon: FileText },
   { to: '/app/expenses', label: 'Expenses', icon: Receipt },
   { to: '/app/orders', label: 'Orders', icon: Package },
-  { to: '/app/google-sheets', label: 'Google Sheets', icon: FileSpreadsheet },
+  { to: '/app/google-sheets', label: 'Data Import', icon: FileSpreadsheet },
 ];
 
 export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void }) {

@@ -26,7 +26,7 @@ describe("GoogleSheetsPage file import workflow", () => {
   });
 
   it("persists mapped records and refreshes data", () => {
-    expect(page).toMatch(/createEntity\(importTarget/);
+    expect(page).toMatch(/createEntitiesBatch\(importTarget/);
     expect(page).toMatch(/ledgerly:data-updated/);
   });
 

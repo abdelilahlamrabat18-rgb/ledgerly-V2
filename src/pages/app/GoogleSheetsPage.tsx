@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import * as XLSX from 'xlsx';
 import { useToast } from '../../context/ToastContext';
 import { useAuth } from '../../context/AuthContext';
-import { createEntity, entityFields } from '../../services/dataService';
+import { createEntitiesBatch, entityFields } from '../../services/dataService';
 import type { EntityName, ImportFileFormat } from '../../types';
 
 const ENTITY_OPTIONS: { value: EntityName; label: string }[] = [
@@ -75,16 +75,50 @@ function parseSheet(wb: XLSX.WorkBook, sheetName: string, formatLabel: string): 
   return parsed;
 }
 
-function autoDetectSheet(names: string[]): string | null {
-  if (!names.length) return null;
-  const lower = names.map((n) => n.toLowerCase());
-  for (const opt of ENTITY_OPTIONS) {
-    const idx = lower.indexOf(opt.value);
-    if (idx >= 0) return names[idx];
-    const idxLabel = lower.indexOf(opt.label.toLowerCase());
-    if (idxLabel >= 0) return names[idxLabel];
+function normalizeHeader(value: string) {
+  return String(value || '').trim().toLowerCase().replace(/[\s_-]+/g, '');
+}
+
+function autoMapHeaders(headers: string[], target: EntityName) {
+  const mapping: Record<string, string> = {};
+  for (const field of entityFields[target]) {
+    const normalizedField = normalizeHeader(field);
+    const header = headers.find((h) => normalizeHeader(h) === normalizedField);
+    if (header) mapping[field] = header;
   }
+  return mapping;
+}
+
+function scoreEntity(headers: string[], target: EntityName) {
+  return entityFields[target].filter((field) => headers.some((header) => normalizeHeader(header) === normalizeHeader(field))).length;
+}
+
+function detectBestEntity(headers: string[]): EntityName {
+  let best: EntityName = 'clients';
+  let bestScore = -1;
+  for (const option of ENTITY_OPTIONS) {
+    const score = scoreEntity(headers, option.value);
+    if (score > bestScore) {
+      best = option.value;
+      bestScore = score;
+    }
+  }
+  return best;
+}
+
+function chooseInitialSheet(names: string[]): string | null {
+  if (!names.length) return null;
+  const lower = names.map((n) => n.toLowerCase().trim());
+  const summaryNames = new Set(['summary', 'dashboard summary', 'read me', 'overview', 'instructions']);
+  const operationalIndex = lower.findIndex((name) => ENTITY_OPTIONS.some((option) => option.value === name || option.label.toLowerCase() === name));
+  if (operationalIndex >= 0) return names[operationalIndex];
+  const nonSummaryIndex = lower.findIndex((name) => !summaryNames.has(name));
+  if (nonSummaryIndex >= 0) return names[nonSummaryIndex];
   return names[0];
+}
+
+function autoDetectSheet(names: string[]): string | null {
+  return chooseInitialSheet(names);
 }
 
 function parseAmount(value: string) {
@@ -200,6 +234,10 @@ export function GoogleSheetsPage() {
     if (parsed.rows.length > MAX_ROWS) {
       throw new Error(`This file has more than ${MAX_ROWS.toLocaleString()} data rows. Split it into smaller imports.`);
     }
+    const bestTarget = detectBestEntity(parsed.headers);
+    const nextMapping = autoMapHeaders(parsed.headers, bestTarget);
+    setImportTarget(bestTarget);
+    setMapping(nextMapping);
     setHeaders(parsed.headers);
     setRows(parsed.rows);
     toast(`Loaded ${sourceLabel}. Map columns to import.`, 'success');
@@ -306,16 +344,31 @@ export function GoogleSheetsPage() {
       const records = dataRows
         .map((row) => mapRecord(importTarget, headers, row, mapping, user?.id))
         .filter((record): record is NonNullable<typeof record> => record !== null);
+      console.log('[ledgerly][import] confirmImport start', {
+        targetTable: importTarget,
+        authUserId: user?.id,
+        file: activeLabel,
+        totalDataRows: dataRows.length,
+        mappedRecords: records.length,
+        mapping,
+        samplePayload: records[0] ?? null,
+      });
       let imported = 0;
       let skipped = Math.max(dataRows.length - records.length, 0);
-      for (const record of records) {
+      if (records.length) {
         try {
-          await createEntity(importTarget, record as Record<string, unknown>, user?.id);
-          imported += 1;
-        } catch {
-          skipped += 1;
+          const inserted = await createEntitiesBatch(importTarget, records as Record<string, unknown>[], user?.id);
+          imported = inserted.length || records.length;
+        } catch (err) {
+          console.error('[ledgerly][import] batch insert failed', { targetTable: importTarget, authUserId: user?.id, error: err });
+          setImportError(err instanceof Error ? err.message : 'Import failed.');
+          toast(err instanceof Error ? err.message : 'Import failed.', 'error');
+          setImporting(false);
+          setShowImportConfirm(false);
+          return;
         }
       }
+      console.log('[ledgerly][import] confirmImport finished', { targetTable: importTarget, authUserId: user?.id, imported, skipped });
       setImportResult({ imported, skipped });
       if (imported > 0) {
         toast(`Imported ${imported} row(s).`, 'success');
@@ -326,6 +379,7 @@ export function GoogleSheetsPage() {
       }
       toast('No valid rows were imported. Check your mapping and data.', 'error');
     } catch (err) {
+      console.error('[ledgerly][import] confirmImport fatal error', { targetTable: importTarget, authUserId: user?.id, error: err });
       const message = err instanceof Error ? err.message : 'Import failed.';
       setImportError(message);
       toast(message, 'error');
