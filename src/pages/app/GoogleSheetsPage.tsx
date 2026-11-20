@@ -79,6 +79,18 @@ function normalizeHeader(value: string) {
   return String(value || '').trim().toLowerCase().replace(/[\s_-]+/g, '');
 }
 
+function isSummaryReport(headers: string[], rows: string[][]) {
+  const firstHeader = normalizeHeader(headers[0] || '');
+  if (firstHeader === 'ledgerlydemoworkspace' || firstHeader === 'summary' || firstHeader === 'report') return true;
+  if (!rows.length) return false;
+  let sparseRows = 0;
+  for (const row of rows) {
+    const populated = row.filter((cell) => String(cell || '').trim()).length;
+    if (populated <= 1) sparseRows += 1;
+  }
+  return sparseRows / rows.length > 0.3;
+}
+
 function autoMapHeaders(headers: string[], target: EntityName) {
   const mapping: Record<string, string> = {};
   for (const field of entityFields[target]) {
@@ -316,6 +328,11 @@ export function GoogleSheetsPage() {
   }
 
   const previewRows = rows.slice(0, 20);
+  const structuralWarning = useMemo(() => {
+    if (!headers || !headers.length || !rows.length) return null;
+    if (isSummaryReport(headers, rows)) return 'This looks like a summary report rather than a data table. Please upload a flat table sheet (such as Clients, Invoices, Expenses, or Orders) or upload the full .xlsx workbook.';
+    return null;
+  }, [headers, rows]);
   const mappingError = useMemo(() => {
     if (!headers || !headers.length) return null;
     return validateMapping(importTarget, headers, mapping);
@@ -327,7 +344,7 @@ export function GoogleSheetsPage() {
   function resetMapping() { setMapping({}); setImportResult(null); setImportError(null); }
 
   function startImport() {
-    if (mappingError) { setImportError(mappingError); return; }
+    if (structuralWarning) { setImportError(structuralWarning); return; }
     if (!headers || !headers.length) { setImportError('Load a file with a header row before importing.'); return; }
     setImportError(null);
     setImportResult(null);
@@ -335,7 +352,7 @@ export function GoogleSheetsPage() {
   }
 
   async function confirmImport() {
-    if (mappingError || !headers) { setImportError(mappingError || 'Load a file before importing.'); setShowImportConfirm(false); return; }
+    if (mappingError || structuralWarning || !headers) { setImportError(mappingError || structuralWarning || 'Load a file before importing.'); setShowImportConfirm(false); return; }
     setImporting(true);
     setImportError(null);
     setImportResult(null);
@@ -439,6 +456,7 @@ export function GoogleSheetsPage() {
           </div>
         )}
         {fileError && <div className="notice" style={{ marginTop: 12, borderColor: '#e95f67' }}>{fileError}</div>}
+        {structuralWarning && <div className="notice" style={{ marginTop: 12, borderColor: '#f59e0b' }}>{structuralWarning}</div>}
       </section>
 
       {(fileLoading || (headers && headers.length > 0)) && (
@@ -498,7 +516,7 @@ export function GoogleSheetsPage() {
                   ))}
                 </div>
                 <div style={{ marginTop: 16, display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-                  <button className="button button-primary" onClick={startImport} disabled={importing || !!mappingError}>Import Data</button>
+                  <button className="button button-primary" onClick={startImport} disabled={importing || !!mappingError || !!structuralWarning}>Import Data</button>
                   <button className="button button-ghost" onClick={resetMapping}>Reset mapping</button>
                   {mappingError && <span className="muted" style={{ fontSize: 11 }}>{mappingError}</span>}
                 </div>
@@ -545,6 +563,7 @@ export function GoogleSheetsPage() {
 }
 
 export default GoogleSheetsPage;
+
 
 
 
