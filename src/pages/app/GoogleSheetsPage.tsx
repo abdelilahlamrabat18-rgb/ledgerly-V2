@@ -1,9 +1,9 @@
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import * as XLSX from 'xlsx';
 import { useToast } from '../../context/ToastContext';
 import { useAuth } from '../../context/AuthContext';
-import { createEntitiesBatch, entityFields } from '../../services/dataService';
+import { createEntitiesBatch, entityFields, listEntity } from '../../services/dataService';
 import type { EntityName, ImportFileFormat } from '../../types';
 
 const ENTITY_OPTIONS: { value: EntityName; label: string }[] = [
@@ -73,6 +73,31 @@ function parseSheet(wb: XLSX.WorkBook, sheetName: string, formatLabel: string): 
   const parsed = rowsFromArrays(arrays);
   if (!parsed) throw new Error(`This ${formatLabel} sheet is empty or has no header row. Add column headers and try again.`);
   return parsed;
+}
+
+function mappingStorageKey(entity: EntityName) {
+  return `ledgerly:import-mapping:${entity}`;
+}
+function loadSavedMapping(entity: EntityName): Record<string, string> {
+  try {
+    const raw = window.localStorage.getItem(mappingStorageKey(entity));
+    return raw ? (JSON.parse(raw) as Record<string, string>) : {};
+  } catch {
+    return {};
+  }
+}
+function saveMapping(entity: EntityName, mapping: Record<string, string>) {
+  try {
+    window.localStorage.setItem(mappingStorageKey(entity), JSON.stringify(mapping));
+  } catch {
+    // Ignore storage failures.
+  }
+}
+function recordDuplicateKey(target: EntityName, record: Record<string, unknown>) {
+  if (target === 'invoices') return `invoice:${String(record.invoice_number || '').trim().toLowerCase()}`;
+  if (target === 'clients') return `client:${String(record.name || '').trim().toLowerCase()}|${String(record.email || '').trim().toLowerCase()}`;
+  if (target === 'expenses') return `expense:${String(record.description || '').trim().toLowerCase()}|${String(record.date || '')}|${String(record.amount ?? '')}`;
+  return `order:${String(record.product || '').trim().toLowerCase()}|${String(record.order_date || '')}|${String(record.total ?? '')}`;
 }
 
 function normalizeHeader(value: string) {
@@ -232,6 +257,8 @@ export function GoogleSheetsPage() {
   const [importResult, setImportResult] = useState<{ imported: number; skipped?: number } | null>(null);
   const [importError, setImportError] = useState<string | null>(null);
   const [showImportConfirm, setShowImportConfirm] = useState(false);
+  const [skipDuplicates, setSkipDuplicates] = useState(true);
+  const [duplicateCount, setDuplicateCount] = useState(0);
 
   function resetMappingState(nextTarget?: EntityName) {
     setImportTarget(nextTarget ?? 'clients');
@@ -248,6 +275,10 @@ export function GoogleSheetsPage() {
     }
     const bestTarget = detectBestEntity(parsed.headers);
     const nextMapping = autoMapHeaders(parsed.headers, bestTarget);
+    const saved = loadSavedMapping(bestTarget);
+    for (const field of entityFields[bestTarget]) {
+      if (!nextMapping[field] && saved[field] && parsed.headers.includes(saved[field])) nextMapping[field] = saved[field];
+    }
     setImportTarget(bestTarget);
     setMapping(nextMapping);
     setHeaders(parsed.headers);
@@ -372,10 +403,22 @@ export function GoogleSheetsPage() {
       });
       let imported = 0;
       let skipped = Math.max(dataRows.length - records.length, 0);
-      if (records.length) {
+      let recordsToImport = records;
+      if (skipDuplicates && duplicateCount > 0) {
         try {
-          const inserted = await createEntitiesBatch(importTarget, records as Record<string, unknown>[], user?.id);
-          imported = inserted.length || records.length;
+          const existing = await listEntity(importTarget);
+          const existingKeys = new Set(existing.map((record) => recordDuplicateKey(importTarget, record as Record<string, unknown>)));
+          recordsToImport = records.filter((record) => !existingKeys.has(recordDuplicateKey(importTarget, record as Record<string, unknown>)));
+          skipped += records.length - recordsToImport.length;
+        } catch {
+          // If duplicate lookup fails, continue with all mapped records.
+        }
+      }
+      saveMapping(importTarget, mapping);
+      if (recordsToImport.length) {
+        try {
+          const inserted = await createEntitiesBatch(importTarget, recordsToImport as Record<string, unknown>[], user?.id);
+          imported = inserted.length || recordsToImport.length;
         } catch (err) {
           console.error('[ledgerly][import] batch insert failed', { targetTable: importTarget, authUserId: user?.id, error: err });
           setImportError(err instanceof Error ? err.message : 'Import failed.');
@@ -406,6 +449,26 @@ export function GoogleSheetsPage() {
     }
   }
   function cancelImport() { if (!importing) setShowImportConfirm(false); }
+
+  useEffect(() => {
+    if (!headers || !headers.length || !rows.length) { setDuplicateCount(0); return; }
+    let cancelled = false;
+    void (async () => {
+      try {
+        const existing = await listEntity(importTarget);
+        const keys = new Set(existing.map((record) => recordDuplicateKey(importTarget, record as Record<string, unknown>)));
+        let count = 0;
+        for (const row of rows) {
+          const record = mapRecord(importTarget, headers, row, mapping, user?.id);
+          if (record && keys.has(recordDuplicateKey(importTarget, record as Record<string, unknown>))) count += 1;
+        }
+        if (!cancelled) setDuplicateCount(count);
+      } catch {
+        if (!cancelled) setDuplicateCount(0);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [headers, rows, importTarget, mapping, user?.id]);
 
   const activeLabel = selectedSheet && fileName ? `${fileName} — ${selectedSheet}` : (fileName || 'File');
 
@@ -519,6 +582,17 @@ export function GoogleSheetsPage() {
                   <button className="button button-primary" onClick={startImport} disabled={importing || !!mappingError || !!structuralWarning}>Import Data</button>
                   <button className="button button-ghost" onClick={resetMapping}>Reset mapping</button>
                   {mappingError && <span className="muted" style={{ fontSize: 11 }}>{mappingError}</span>}
+                  {headers && rows.length > 0 && (
+                    <div style={{ width: '100%', marginTop: 8 }}>
+                      <p className="muted" style={{ margin: 0, fontSize: 11 }}>
+                        {Math.max(rows.length - duplicateCount, 0)} new row(s) and {duplicateCount} potential duplicate(s) detected.
+                      </p>
+                      <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, marginTop: 6, fontSize: 11, color: '#556274' }}>
+                        <input type="checkbox" checked={skipDuplicates} onChange={(e) => setSkipDuplicates(e.target.checked)} />
+                        Skip potential duplicates
+                      </label>
+                    </div>
+                  )}
                 </div>
               </div>
             </div>

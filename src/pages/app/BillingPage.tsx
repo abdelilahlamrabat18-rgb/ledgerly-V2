@@ -54,7 +54,7 @@ export function BillingPage() {
             <span style={{ color: '#2db47a', fontSize: 10, fontWeight: 800 }}>{trial?.entitlement || entitlement}</span>
           </div>
           <div className="settings-row">
-            <div className="settings-row-copy"><strong>Price</strong><span>{trial ? `${(trial.planPriceCents / 100).toFixed(2)} ${trial.currency}` : '$15.00 USD'} / month</span></div>
+            <div className="settings-row-copy"><strong>Price</strong><span>{trial ? `${(trial.planPriceCents / 100).toFixed(2)} ${trial.currency}` : '$24.00 USD'} / month or $240.00 USD / year</span></div>
             <span style={{ color: '#667385', fontSize: 10 }}>After trial</span>
           </div>
           {trial?.trialEnd && (
@@ -70,7 +70,7 @@ export function BillingPage() {
         <div className="card-header"><div><h2 className="card-title">Start your 14-day trial</h2><p className="page-subtitle" style={{ fontSize: 10, marginTop: 4 }}>No card required. Cancel anytime.</p></div></div>
         <div style={{ padding: '3px 20px 12px' }}>
           <p style={{ margin: 0, color: '#667385', fontSize: 12, lineHeight: 1.6 }}>
-            Ledgerly costs <strong>$15 USD per month</strong> after the trial. Your trial starts once, on the server, and runs for 14 days.
+            Ledgerly costs <strong>$24 USD per month</strong> or <strong>$240 USD per year</strong> after the trial. Your trial starts once, on the server, and runs for 14 days.
           </p>
           <div style={{ marginTop: 14 }}>
             <button
@@ -100,10 +100,10 @@ export function BillingPage() {
             <div className="settings-row-copy"><strong>Disconnect Google</strong><span>Removes the Google Sheets connection from Settings. Does not cancel billing.</span></div>
             <span style={{ color: '#9aa4b2', fontSize: 10, fontWeight: 800 }}>See Settings</span>
           </div>
-          <div className="settings-row">
-            <div className="settings-row-copy"><strong>Delete account</strong><span>Permanently removes your workspace. Separate from cancellation.</span></div>
-            <span style={{ color: '#9aa4b2', fontSize: 10, fontWeight: 800 }}>Not implemented</span>
-          </div>
+           <div className="settings-row">
+             <div className="settings-row-copy"><strong>Refund policy</strong><span>14-day refund window on initial subscription payments.</span></div>
+             <a href="/refund-policy" className="button button-ghost" style={{ fontSize: 10 }}>View policy</a>
+           </div>
         </div>
       </section>
     </main>
