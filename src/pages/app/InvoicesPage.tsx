@@ -1,4 +1,4 @@
-import { FileText, Pencil, Plus, Search, Trash2 } from 'lucide-react';
+import { FileText, Pencil, Plus, Search, Trash2, Download, ChevronDown, ChevronUp } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { ConfirmDialog } from '../../components/shared/ConfirmDialog';
 import { LoadingState } from '../../components/shared/LoadingState';
@@ -9,19 +9,188 @@ import { useEntity } from '../../hooks/useBusinessData';
 import { useToast } from '../../context/ToastContext';
 import type { Client, Invoice, InvoiceStatus } from '../../types';
 import { formatCurrency, formatDate, today, validateAmount } from '../../lib/utils';
+import { toCSV, downloadCSV } from '../../lib/export';
 
 type InvoiceForm = { invoice_number: string; client_id: string; amount: string; status: InvoiceStatus; issue_date: string; due_date: string; notes: string };
 const emptyForm: InvoiceForm = { invoice_number: '', client_id: '', amount: '', status: 'pending', issue_date: today(), due_date: '', notes: '' };
 
 export function InvoicesPage() {
-  const invoices = useEntity<Invoice>('invoices'); const clients = useEntity<Client>('clients'); const { toast } = useToast();
-  const [query, setQuery] = useState(''); const [status, setStatus] = useState('all'); const [modal, setModal] = useState(false); const [selected, setSelected] = useState<Invoice | null>(null); const [form, setForm] = useState<InvoiceForm>(emptyForm); const [deleteTarget, setDeleteTarget] = useState<Invoice | null>(null); const [saving, setSaving] = useState(false);
+  const invoices = useEntity<Invoice>('invoices');
+  const clients = useEntity<Client>('clients');
+  const { toast } = useToast();
+  const [query, setQuery] = useState('');
+  const [status, setStatus] = useState('all');
+  const [modal, setModal] = useState(false);
+  const [selected, setSelected] = useState<Invoice | null>(null);
+  const [form, setForm] = useState<InvoiceForm>(emptyForm);
+  const [deleteTarget, setDeleteTarget] = useState<Invoice | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [showExportMenu, setShowExportMenu] = useState(false);
+
   const filtered = useMemo(() => invoices.items.filter((invoice) => (status === 'all' || invoice.status === status) && `${invoice.invoice_number} ${invoice.client?.name || ''} ${invoice.client?.company || ''}`.toLowerCase().includes(query.toLowerCase())), [invoices.items, query, status]);
+
   function openCreate() { setSelected(null); setForm({ ...emptyForm, invoice_number: `INV-${1049 + invoices.items.length}` }); setModal(true); }
   function openEdit(invoice: Invoice) { setSelected(invoice); setForm({ invoice_number: invoice.invoice_number, client_id: invoice.client_id || '', amount: String(invoice.amount), status: invoice.status, issue_date: invoice.issue_date, due_date: invoice.due_date || '', notes: invoice.notes || '' }); setModal(true); }
-  async function save(event: React.FormEvent) { event.preventDefault(); if (saving) return; if (!form.invoice_number.trim()) { toast('Invoice number is required.', 'error'); return; } const amount = validateAmount(form.amount); if (amount === null) { toast('Enter a valid invoice amount.', 'error'); return; } setSaving(true); try { const payload = { ...form, amount, client_id: form.client_id || null, due_date: form.due_date || null }; if (selected) { await invoices.update(selected.id, payload); toast('Invoice updated.'); } else { await invoices.create(payload); toast('Invoice added.'); } setModal(false); } catch (err) { toast(err instanceof Error ? err.message : 'Unable to save invoice.', 'error'); } finally { setSaving(false); } }
-  async function confirmDelete() { if (!deleteTarget) return; setSaving(true); try { await invoices.remove(deleteTarget.id); toast('Invoice deleted.'); setDeleteTarget(null); } catch (err) { toast(err instanceof Error ? err.message : 'Unable to delete invoice.', 'error'); } finally { setSaving(false); } }
+
+  async function save(event: React.FormEvent) {
+    event.preventDefault();
+    if (saving) return;
+    if (!form.invoice_number.trim()) { toast('Invoice number is required.', 'error'); return; }
+    const amount = validateAmount(form.amount);
+    if (amount === null) { toast('Enter a valid invoice amount.', 'error'); return; }
+    setSaving(true);
+    try {
+      const payload = { ...form, amount, client_id: form.client_id || null, due_date: form.due_date || null };
+      if (selected) { await invoices.update(selected.id, payload); toast('Invoice updated.'); }
+      else { await invoices.create(payload); toast('Invoice added.'); }
+      setModal(false);
+    } catch (err) { toast(err instanceof Error ? err.message : 'Unable to save invoice.', 'error'); }
+    finally { setSaving(false); }
+  }
+
+  async function confirmDelete() {
+    if (!deleteTarget) return;
+    setSaving(true);
+    try { await invoices.remove(deleteTarget.id); toast('Invoice deleted.'); setDeleteTarget(null); }
+    catch (err) { toast(err instanceof Error ? err.message : 'Unable to delete invoice.', 'error'); }
+    finally { setSaving(false); }
+  }
+
+  async function quickStatusChange(invoice: Invoice, newStatus: InvoiceStatus) {
+    if (invoice.status === newStatus) return;
+    try { await invoices.update(invoice.id, { status: newStatus }); toast(`Invoice marked as ${newStatus}.`); }
+    catch (err) { toast(err instanceof Error ? err.message : 'Failed to update status.'); }
+  }
+
+  const handleExport = () => {
+    const headers = [
+      { key: 'invoice_number', label: 'Invoice Number' },
+      { key: 'client', label: 'Client' },
+      { key: 'status', label: 'Status' },
+      { key: 'issue_date', label: 'Issue Date' },
+      { key: 'due_date', label: 'Due Date' },
+      { key: 'amount', label: 'Amount' },
+    ];
+    const rows = filtered.map((inv) => ({
+      invoice_number: inv.invoice_number,
+      client: inv.client?.company || inv.client?.name || '—',
+      status: inv.status,
+      issue_date: inv.issue_date,
+      due_date: inv.due_date || '',
+      amount: formatCurrency(inv.amount),
+    }));
+    downloadCSV(toCSV(rows, headers), `invoices-${today()}.csv`);
+    setShowExportMenu(false);
+  };
+
   const total = filtered.reduce((sum, invoice) => sum + Number(invoice.amount), 0);
-  return <main className="page-wrap"><div className="page-heading"><div><p className="eyebrow">Money in</p><h1 className="page-title">Invoices</h1><p className="page-subtitle">Track what’s been billed, paid, and still needs attention.</p></div><button className="button button-primary" onClick={openCreate}><Plus size={15} /> Add invoice</button></div>{(invoices.error || clients.error) && <PageError message={invoices.error || clients.error || ''} onRetry={() => { void invoices.refresh(); void clients.refresh(); }} />}<section className="card table-card"><div className="table-toolbar"><div className="table-toolbar-left"><div className="inline-search"><Search size={14} /><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search invoices…" /></div><select className="filter-select" value={status} onChange={(e) => setStatus(e.target.value)}><option value="all">All statuses</option><option value="draft">Draft</option><option value="pending">Pending</option><option value="paid">Paid</option><option value="overdue">Overdue</option><option value="cancelled">Cancelled</option></select></div><span style={{ color: '#9aa4b2', fontSize: 10 }}>{formatCurrency(total)} shown</span></div>{invoices.loading ? <LoadingState label="Loading invoices…" /> : filtered.length === 0 ? <div className="empty-state"><div className="empty-icon"><FileText size={19} /></div><h3>{query || status !== 'all' ? 'No matching invoices' : 'No invoices yet'}</h3><p>{query || status !== 'all' ? 'Try changing your search or filter.' : 'Add your first invoice to keep cash flow visible.'}</p>{!query && status === 'all' && <button className="button button-primary" onClick={openCreate}><Plus size={14} /> Add invoice</button>}</div> : <div className="table-scroll"><table><thead><tr><th>Invoice</th><th>Client</th><th>Issue date</th><th>Due date</th><th>Status</th><th>Amount</th><th /></tr></thead><tbody>{filtered.map((invoice) => <tr key={invoice.id}><td><strong>{invoice.invoice_number}</strong></td><td>{invoice.client?.company || invoice.client?.name || clients.items.find((client) => client.id === invoice.client_id)?.company || clients.items.find((client) => client.id === invoice.client_id)?.name || 'Unassigned'}</td><td>{formatDate(invoice.issue_date, true)}</td><td>{formatDate(invoice.due_date, true)}</td><td><StatusPill status={invoice.status} /></td><td><strong>{formatCurrency(invoice.amount)}</strong></td><td><div className="table-actions"><button className="button button-ghost" onClick={() => openEdit(invoice)} aria-label="Edit invoice"><Pencil size={14} /></button><button className="button button-ghost" onClick={() => setDeleteTarget(invoice)} aria-label="Delete invoice"><Trash2 size={14} /></button></div></td></tr>)}</tbody></table></div>}</section>{modal && <InvoiceModal form={form} setForm={setForm} clients={clients.items} selected={Boolean(selected)} saving={saving} onClose={() => setModal(false)} onSubmit={save} />}{deleteTarget && <ConfirmDialog title="Delete this invoice?" message={`This will permanently remove ${deleteTarget.invoice_number} and cannot be undone.`} onClose={() => setDeleteTarget(null)} onConfirm={() => void confirmDelete()} loading={saving} />}</main>;
+  const statusOptions: InvoiceStatus[] = ['draft', 'pending', 'paid', 'overdue', 'cancelled'];
+
+  return (
+    <main className="page-wrap">
+      <div className="page-heading">
+        <div>
+          <p className="eyebrow">Money in</p>
+          <h1 className="page-title">Invoices</h1>
+          <p className="page-subtitle">Track what's been billed, paid, and still needs attention.</p>
+        </div>
+        <button className="button button-primary" onClick={openCreate}><Plus size={15} /> Add invoice</button>
+      </div>
+      {(invoices.error || clients.error) && <PageError message={invoices.error || clients.error || ''} onRetry={() => { void invoices.refresh(); void clients.refresh(); }} />}
+      <section className="card table-card">
+        <div className="table-toolbar">
+          <div className="table-toolbar-left">
+            <div className="inline-search"><Search size={14} /><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search invoices…" /></div>
+            <select className="filter-select" value={status} onChange={(e) => setStatus(e.target.value)}>
+              <option value="all">All statuses</option>
+              <option value="draft">Draft</option>
+              <option value="pending">Pending</option>
+              <option value="paid">Paid</option>
+              <option value="overdue">Overdue</option>
+              <option value="cancelled">Cancelled</option>
+            </select>
+          </div>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <span style={{ color: '#9aa4b2', fontSize: 10 }}>{formatCurrency(total)} shown</span>
+            <div style={{ position: 'relative' }}>
+              <button className="button button-secondary" onClick={() => setShowExportMenu(!showExportMenu)}><Download size={14} /> Export</button>
+              {showExportMenu && <div className="export-dropdown" style={{ position: 'absolute', top: '100%', right: 0, marginTop: 6, background: '#fff', border: '1px solid #e8ebf1', borderRadius: 8, boxShadow: '0 8px 24px rgba(20,28,40,0.12)', zIndex: 50, minWidth: 200 }}>
+                <button className="dropdown-item" onClick={handleExport} style={{ width: '100%', textAlign: 'left', padding: '10px 12px', background: 'none', border: 'none', cursor: 'pointer', fontSize: 12, color: '#3d4852' }}>Export filtered (CSV)</button>
+              </div>}
+            </div>
+          </div>
+        </div>
+        {invoices.loading ? <LoadingState label="Loading invoices…" /> : filtered.length === 0 ? (
+          <div className="empty-state">
+            <div className="empty-icon"><FileText size={19} /></div>
+            <h3>{query || status !== 'all' ? 'No matching invoices' : 'No invoices yet'}</h3>
+            <p>{query || status !== 'all' ? 'Try changing your search or filter.' : 'Add your first invoice to keep cash flow visible.'}</p>
+            {!query && status === 'all' && <button className="button button-primary" onClick={openCreate}><Plus size={14} /> Add invoice</button>}
+          </div>
+        ) : (
+          <div className="table-scroll">
+            <table>
+              <thead>
+                <tr><th>Invoice</th><th>Client</th><th>Issue date</th><th>Due date</th><th>Status</th><th>Amount</th><th /></tr>
+              </thead>
+              <tbody>
+                {filtered.map((invoice) => (
+                  <tr key={invoice.id}>
+                    <td><strong>{invoice.invoice_number}</strong></td>
+                    <td>{invoice.client?.company || invoice.client?.name || clients.items.find((client) => client.id === invoice.client_id)?.company || clients.items.find((client) => client.id === invoice.client_id)?.name || 'Unassigned'}</td>
+                    <td>{formatDate(invoice.issue_date, true)}</td>
+                    <td>{formatDate(invoice.due_date, true)}</td>
+                    <td>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <StatusPill status={invoice.status} />
+                        <div style={{ position: 'relative' }}>
+                          <button className="icon-button" aria-label="Change status" onClick={(e) => { e.stopPropagation(); }}><ChevronDown size={12} /></button>
+                          <div style={{ position: 'absolute', top: '100%', right: 0, marginTop: 4, background: '#fff', border: '1px solid #e8ebf1', borderRadius: 6, boxShadow: '0 8px 24px rgba(20,28,40,0.12)', zIndex: 50, minWidth: 140 }}>
+                            {statusOptions.map((s) => (
+                              <button key={s} className="dropdown-item" onClick={(e) => { e.stopPropagation(); quickStatusChange(invoice, s); }} style={{ width: '100%', textAlign: 'left', padding: '8px 12px', background: 'none', border: 'none', cursor: 'pointer', fontSize: 11, color: '#3d4852', borderTop: s === statusOptions[0] ? 'none' : '1px solid #f0f2f5' }}>
+                                {s.charAt(0).toUpperCase() + s.slice(1)}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+                    </td>
+                    <td><strong>{formatCurrency(invoice.amount)}</strong></td>
+                    <td>
+                      <div style={{ display: 'flex', gap: 4 }}>
+                        <button className="button button-ghost" onClick={() => openEdit(invoice)} aria-label="Edit invoice"><Pencil size={14} /></button>
+                        <button className="button button-ghost" onClick={() => { setDeleteTarget(invoice); }} aria-label="Delete invoice"><Trash2 size={14} /></button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
+      {modal && <InvoiceModal form={form} setForm={setForm} clients={clients.items} selected={Boolean(selected)} saving={saving} onClose={() => setModal(false)} onSubmit={save} />}
+      {deleteTarget && <ConfirmDialog title="Delete this invoice?" message={`This will permanently remove ${deleteTarget.invoice_number} and cannot be undone.`} onClose={() => setDeleteTarget(null)} onConfirm={() => void confirmDelete()} loading={saving} />}
+    </main>
+  );
 }
-function InvoiceModal({ form, setForm, clients, selected, saving, onClose, onSubmit }: { form: InvoiceForm; setForm: (form: InvoiceForm) => void; clients: Client[]; selected: boolean; saving: boolean; onClose: () => void; onSubmit: (event: React.FormEvent) => void }) { const field = (key: keyof InvoiceForm, value: string) => setForm({ ...form, [key]: value }); return <Modal title={selected ? 'Edit invoice' : 'Add an invoice'} subtitle="Capture the details you need to get paid on time." onClose={onClose}><form onSubmit={onSubmit}><div className="form-grid"><label className="form-field"><span className="form-label">Invoice number <em>*</em></span><input className="form-input" required value={form.invoice_number} onChange={(e) => field('invoice_number', e.target.value)} /></label><label className="form-field"><span className="form-label">Client</span><select className="form-select" value={form.client_id} onChange={(e) => field('client_id', e.target.value)}><option value="">Unassigned</option>{clients.map((client) => <option key={client.id} value={client.id}>{client.company || client.name}</option>)}</select></label><label className="form-field"><span className="form-label">Amount <em>*</em></span><input className="form-input" required min="0" step="0.01" type="number" value={form.amount} onChange={(e) => field('amount', e.target.value)} placeholder="0.00" /></label><label className="form-field"><span className="form-label">Status</span><select className="form-select" value={form.status} onChange={(e) => field('status', e.target.value as InvoiceStatus)}><option value="draft">Draft</option><option value="pending">Pending</option><option value="paid">Paid</option><option value="overdue">Overdue</option><option value="cancelled">Cancelled</option></select></label><label className="form-field"><span className="form-label">Issue date <em>*</em></span><input className="form-input" required type="date" value={form.issue_date} onChange={(e) => field('issue_date', e.target.value)} /></label><label className="form-field"><span className="form-label">Due date</span><input className="form-input" type="date" value={form.due_date} onChange={(e) => field('due_date', e.target.value)} /></label><label className="form-field full"><span className="form-label">Notes</span><textarea className="form-textarea" value={form.notes} onChange={(e) => field('notes', e.target.value)} placeholder="Payment terms or context…" /></label></div><div className="form-actions"><button type="button" className="button button-secondary" onClick={onClose}>Cancel</button><button className="button button-primary" disabled={saving}>{saving ? 'Saving…' : selected ? 'Save changes' : 'Add invoice'}</button></div></form></Modal>; }
+
+function InvoiceModal({ form, setForm, clients, selected, saving, onClose, onSubmit }: { form: InvoiceForm; setForm: (form: InvoiceForm) => void; clients: Client[]; selected: boolean; saving: boolean; onClose: () => void; onSubmit: (event: React.FormEvent) => void }) {
+  const field = (key: keyof InvoiceForm, value: string) => setForm({ ...form, [key]: value });
+  return (
+    <Modal title={selected ? 'Edit invoice' : 'Add an invoice'} subtitle="Capture the details you need to get paid on time." onClose={onClose}>
+      <form onSubmit={onSubmit}>
+        <div className="form-grid">
+          <label className="form-field"><span className="form-label">Invoice number <em>*</em></span><input className="form-input" required value={form.invoice_number} onChange={(e) => field('invoice_number', e.target.value)} /></label>
+          <label className="form-field"><span className="form-label">Client</span><select className="form-select" value={form.client_id} onChange={(e) => field('client_id', e.target.value)}><option value="">Unassigned</option>{clients.map((client) => <option key={client.id} value={client.id}>{client.company || client.name}</option>)}</select></label>
+          <label className="form-field"><span className="form-label">Amount <em>*</em></span><input className="form-input" required min="0" step="0.01" type="number" value={form.amount} onChange={(e) => field('amount', e.target.value)} placeholder="0.00" /></label>
+          <label className="form-field"><span className="form-label">Status</span><select className="form-select" value={form.status} onChange={(e) => field('status', e.target.value as InvoiceStatus)}><option value="draft">Draft</option><option value="pending">Pending</option><option value="paid">Paid</option><option value="overdue">Overdue</option><option value="cancelled">Cancelled</option></select></label>
+          <label className="form-field"><span className="form-label">Issue date <em>*</em></span><input className="form-input" required type="date" value={form.issue_date} onChange={(e) => field('issue_date', e.target.value)} /></label>
+          <label className="form-field"><span className="form-label">Due date</span><input className="form-input" type="date" value={form.due_date} onChange={(e) => field('due_date', e.target.value)} /></label>
+          <label className="form-field full"><span className="form-label">Notes</span><textarea className="form-textarea" value={form.notes} onChange={(e) => field('notes', e.target.value)} placeholder="Payment terms or context…" /></label>
+        </div>
+        <div className="form-actions"><button type="button" className="button button-secondary" onClick={onClose}>Cancel</button><button className="button button-primary" disabled={saving}>{saving ? 'Saving…' : selected ? 'Save changes' : 'Add invoice'}</button></div>
+      </form>
+    </Modal>
+  );
+}

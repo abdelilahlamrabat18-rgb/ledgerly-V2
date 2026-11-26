@@ -14,32 +14,43 @@ export const entityFields: Record<EntityName, string[]> = {
   orders: ['product', 'quantity', 'total', 'status', 'order_date', 'notes', 'client_id'],
 };
 
+function toDataError(error: unknown) { return new Error(userFacingError(error)); }
+
 function requireRemote() {
   if (isDemoMode) return false;
   if (!isSupabaseConfigured) throw new Error(getSupabaseConfigurationIssue() || 'Supabase is not configured.');
   return true;
 }
 
-function toDataError(error: unknown) { return new Error(userFacingError(error)); }
+function declinedImportIds() {
+  try {
+    const raw = window.localStorage.getItem('ledgerly:declined-import-records');
+    return new Set<string>(raw ? (JSON.parse(raw) as string[]) : []);
+  } catch {
+    return new Set<string>();
+  }
+}
 
 export async function listEntity<T>(entity: EntityName): Promise<T[]> {
-  if (!requireRemote()) return [...(demoStore[entity] as T[])];
+  if (!requireRemote()) return (demoStore[entity] as T[]).filter((item) => !declinedImportIds().has(String((item as { id?: string }).id ?? '')));
   try {
     const orderColumn = entity === 'expenses' ? 'date' : entity === 'orders' ? 'order_date' : 'created_at';
     const { data, error } = await supabase.from(entity).select('*').order(orderColumn, { ascending: false });
     if (error) throw error;
     const records = (data || []) as unknown as Array<Record<string, unknown> & { client_id?: string | null }>;
-    if ((entity === 'invoices' || entity === 'orders') && records.length) {
-      const clientIds = [...new Set(records.map((record) => record.client_id).filter((id): id is string => Boolean(id)))];
+    const declined = declinedImportIds();
+    const activeRecords = records.filter((record) => !declined.has(String(record.id ?? '')));
+    if ((entity === 'invoices' || entity === 'orders') && activeRecords.length) {
+      const clientIds = [...new Set(activeRecords.map((record) => record.client_id).filter((id): id is string => Boolean(id)))];
       if (clientIds.length) {
         const { data: clientData, error: clientError } = await supabase.from('clients').select('id,name,company').in('id', clientIds);
         if (clientError) throw clientError;
         const relatedClients = (clientData || []) as unknown as Array<{ id: string; name: string; company: string | null }>;
         const clientsById = new Map(relatedClients.map((client) => [client.id, { name: client.name, company: client.company }]));
-        return records.map((record) => ({ ...record, client: record.client_id ? clientsById.get(record.client_id) || null : null })) as T[];
+        return activeRecords.map((record) => ({ ...record, client: record.client_id ? clientsById.get(record.client_id) || null : null })) as T[];
       }
     }
-    return records as T[];
+    return activeRecords as T[];
   } catch (error) {
     throw toDataError(error);
   }

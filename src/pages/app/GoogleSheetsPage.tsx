@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import * as XLSX from 'xlsx';
 import { useToast } from '../../context/ToastContext';
 import { useAuth } from '../../context/AuthContext';
-import { createEntitiesBatch, entityFields, listEntity } from '../../services/dataService';
+import { createEntitiesBatch, deleteEntity, entityFields, listEntity } from '../../services/dataService';
 import type { EntityName, ImportFileFormat } from '../../types';
 
 const ENTITY_OPTIONS: { value: EntityName; label: string }[] = [
@@ -100,6 +100,42 @@ function recordDuplicateKey(target: EntityName, record: Record<string, unknown>)
   return `order:${String(record.product || '').trim().toLowerCase()}|${String(record.order_date || '')}|${String(record.total ?? '')}`;
 }
 
+type ImportSource = {
+  batchId: string;
+  fileName: string;
+  sheetName: string;
+  targetEntity: EntityName;
+  rowCount: number;
+  importedAt: string;
+  status: 'active' | 'declined';
+  recordIds: string[];
+};
+
+const IMPORT_SOURCES_KEY = 'ledgerly:import-sources';
+const DECLINED_RECORDS_KEY = 'ledgerly:declined-import-records';
+
+function loadImportSources(): ImportSource[] {
+  try {
+    const raw = window.localStorage.getItem(IMPORT_SOURCES_KEY);
+    return raw ? (JSON.parse(raw) as ImportSource[]) : [];
+  } catch {
+    return [];
+  }
+}
+function saveImportSources(sources: ImportSource[]) {
+  try { window.localStorage.setItem(IMPORT_SOURCES_KEY, JSON.stringify(sources)); } catch {}
+}
+function loadDeclinedRecordIds(): Set<string> {
+  try {
+    const raw = window.localStorage.getItem(DECLINED_RECORDS_KEY);
+    return new Set(raw ? (JSON.parse(raw) as string[]) : []);
+  } catch {
+    return new Set();
+  }
+}
+function saveDeclinedRecordIds(ids: Set<string>) {
+  try { window.localStorage.setItem(DECLINED_RECORDS_KEY, JSON.stringify([...ids])); } catch {}
+}
 function normalizeHeader(value: string) {
   return String(value || '').trim().toLowerCase().replace(/[\s_-]+/g, '');
 }
@@ -258,6 +294,7 @@ export function GoogleSheetsPage() {
   const [importError, setImportError] = useState<string | null>(null);
   const [showImportConfirm, setShowImportConfirm] = useState(false);
   const [skipDuplicates, setSkipDuplicates] = useState(true);
+  const [importSources, setImportSources] = useState<ImportSource[]>(() => loadImportSources());
   const [duplicateCount, setDuplicateCount] = useState(0);
 
   function resetMappingState(nextTarget?: EntityName) {
@@ -419,6 +456,20 @@ export function GoogleSheetsPage() {
         try {
           const inserted = await createEntitiesBatch(importTarget, recordsToImport as Record<string, unknown>[], user?.id);
           imported = inserted.length || recordsToImport.length;
+          const batchId = `import-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+          const source: ImportSource = {
+            batchId,
+            fileName: fileName || 'File',
+            sheetName: selectedSheet || 'Sheet',
+            targetEntity: importTarget,
+            rowCount: recordsToImport.length,
+            importedAt: new Date().toISOString(),
+            status: 'active',
+            recordIds: (inserted as Array<{ id?: string }>).map((record) => String(record.id || '')).filter(Boolean),
+          };
+          const nextSources = [source, ...importSources];
+          setImportSources(nextSources);
+          saveImportSources(nextSources);
         } catch (err) {
           console.error('[ledgerly][import] batch insert failed', { targetTable: importTarget, authUserId: user?.id, error: err });
           setImportError(err instanceof Error ? err.message : 'Import failed.');
@@ -448,7 +499,30 @@ export function GoogleSheetsPage() {
       setShowImportConfirm(false);
     }
   }
+  function toggleDecline(source: ImportSource) {
+    const nextStatus: ImportSource['status'] = source.status === 'active' ? 'declined' : 'active';
+    const declined = loadDeclinedRecordIds();
+    if (nextStatus === 'declined') source.recordIds.forEach((id) => declined.add(id));
+    else source.recordIds.forEach((id) => declined.delete(id));
+    saveDeclinedRecordIds(declined);
+    const nextSources = importSources.map((item) => item.batchId === source.batchId ? { ...item, status: nextStatus } : item);
+    setImportSources(nextSources);
+    saveImportSources(nextSources);
+    window.dispatchEvent(new Event('ledgerly:data-updated'));
+  }
   function cancelImport() { if (!importing) setShowImportConfirm(false); }
+  async function removeImport(source: ImportSource) {
+    for (const id of source.recordIds) {
+      try { await deleteEntity(source.targetEntity, id); } catch { /* continue */ }
+    }
+    const nextSources = importSources.filter((item) => item.batchId !== source.batchId);
+    setImportSources(nextSources);
+    saveImportSources(nextSources);
+    const declined = loadDeclinedRecordIds();
+    source.recordIds.forEach((id) => declined.delete(id));
+    saveDeclinedRecordIds(declined);
+    window.dispatchEvent(new Event('ledgerly:data-updated'));
+  }
 
   useEffect(() => {
     if (!headers || !headers.length || !rows.length) { setDuplicateCount(0); return; }
@@ -606,6 +680,29 @@ export function GoogleSheetsPage() {
         </div>
       )}
       {importError && <div className="notice" style={{ marginTop: 18, borderColor: '#e95f67' }}>{importError}</div>}
+
+      <section className="card" style={{ padding: 20, marginTop: 18 }}>
+        <p className="eyebrow" style={{ margin: 0 }}>Imported spreadsheets</p>
+        {importSources.length === 0 ? (
+          <p className="muted" style={{ marginTop: 8, fontSize: 12 }}>No imported spreadsheet batches yet.</p>
+        ) : (
+          <div style={{ marginTop: 12, display: 'grid', gap: 10 }}>
+            {importSources.map((source) => (
+              <div key={source.batchId} style={{ border: '1px solid #e8ebf1', borderRadius: 8, padding: 12, display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+                <div>
+                  <strong style={{ fontSize: 12 }}>{source.fileName} — {source.sheetName}</strong>
+                  <p className="muted" style={{ margin: '4px 0 0', fontSize: 11 }}>{source.targetEntity} · {source.rowCount} row(s) · {new Date(source.importedAt).toLocaleString()}</p>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <span style={{ fontSize: 10, fontWeight: 800, color: source.status === 'active' ? '#2db47a' : '#9aa4b2' }}>{source.status === 'active' ? 'Active' : 'Declined'}</span>
+                  <button className="button button-ghost" onClick={() => toggleDecline(source)}>{source.status === 'active' ? 'Decline' : 'Reactivate'}</button>
+                  <button className="button button-ghost" onClick={() => void removeImport(source)}>Remove</button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
 
       {showImportConfirm && (
         <div className="modal-backdrop">

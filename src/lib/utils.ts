@@ -1,6 +1,6 @@
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
-import { format, parseISO } from 'date-fns';
+import { format, parseISO, subDays, startOfDay, endOfDay, startOfMonth, endOfMonth } from 'date-fns';
 
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
@@ -41,3 +41,5 @@ export function validateQuantity(value: string | null | undefined) {
   const parsed = Number(trimmed);
   return Number.isFinite(parsed) && parsed >= 1 ? parsed : null;
 }
+
+export { parseISO, subDays, startOfDay, endOfDay, startOfMonth, endOfMonth };
