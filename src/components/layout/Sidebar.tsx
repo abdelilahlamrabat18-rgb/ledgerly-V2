@@ -29,9 +29,7 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
   return <aside className={`app-sidebar ${open ? 'open' : ''}`}>
     <button className="icon-button mobile-menu" onClick={onClose} aria-label="Close navigation"><X size={20} /></button>
     <div className="brand flex items-center gap-2.5">
-      <span className="brand-mark" aria-hidden="true">
-        <BrandLogo size={20} />
-      </span>
+      <BrandLogo size={20} aria-hidden="true" />
       <span className="whitespace-nowrap">Ledgerly</span>
     </div>
     <p className="nav-label">Workspace</p>
