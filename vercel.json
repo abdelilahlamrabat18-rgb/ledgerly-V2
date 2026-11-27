@@ -13,6 +13,10 @@
     {
       "source": "/terms",
       "destination": "/index.html"
+    },
+    {
+      "source": "/refund-policy",
+      "destination": "/index.html"
     }
   ]
 }
