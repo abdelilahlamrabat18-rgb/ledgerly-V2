@@ -155,6 +155,8 @@ type SheetState = {
   mappingCompleteness: { mapped: number; total: number; required: number; requiredTotal: number; isComplete: boolean } | null;
   duplicateCount: number;
   structuralWarning: string | null;
+  imported: boolean;
+  importedCount: number;
 };
 
 type ImportSource = {
@@ -192,6 +194,22 @@ function loadDeclinedRecordIds(): Set<string> {
 }
 function saveDeclinedRecordIds(ids: Set<string>) {
   try { window.localStorage.setItem(DECLINED_RECORDS_KEY, JSON.stringify([...ids])); } catch {}
+}
+const WORKBOOK_STORAGE_KEY = 'ledgerly:workbook-session';
+
+function loadWorkbookSession(): { fileName: string; fileFormat: ImportFileFormat; sheetNames: string[]; sheetStates: Record<string, SheetState>; selectedSheet: string | null } | null {
+  try {
+    const raw = window.sessionStorage.getItem(WORKBOOK_STORAGE_KEY);
+    return raw ? (JSON.parse(raw) as any) : null;
+  } catch {
+    return null;
+  }
+}
+function saveWorkbookSession(data: { fileName: string; fileFormat: ImportFileFormat; sheetNames: string[]; sheetStates: Record<string, SheetState>; selectedSheet: string | null }) {
+  try { window.sessionStorage.setItem(WORKBOOK_STORAGE_KEY, JSON.stringify(data)); } catch {}
+}
+function clearWorkbookSession() {
+  try { window.sessionStorage.removeItem(WORKBOOK_STORAGE_KEY); } catch {}
 }
 function normalizeHeader(value: string) {
   return String(value || '').trim().toLowerCase().replace(/[\s_-]+/g, '');
@@ -518,6 +536,48 @@ export function GoogleSheetsPage() {
   const [hygieneSummary, setHygieneSummary] = useState<HygieneSummary | null>(null);
   const [showHygieneDetails, setShowHygieneDetails] = useState(false);
   const [structuralWarning, setStructuralWarning] = useState<string | null>(null);
+  const [singleImportSuccess, setSingleImportSuccess] = useState<{ imported: number; sheetName: string; remainingTabs: string[] } | null>(null);
+
+  // Load persisted workbook session on mount
+  useEffect(() => {
+    const session = loadWorkbookSession();
+    if (session) {
+      setFileName(session.fileName);
+      setFileFormat(session.fileFormat);
+      setSheetNames(session.sheetNames);
+      setSheetStates(session.sheetStates);
+      setSelectedSheet(session.selectedSheet);
+      // Restore the selected sheet's data to live preview
+      const selectedState = session.sheetStates[session.selectedSheet || ''];
+      if (selectedState) {
+        setHeaders(selectedState.headers);
+        setRows(selectedState.rows);
+        setImportTarget(selectedState.targetEntity);
+        setMapping(selectedState.mapping);
+        setMappingCompleteness(selectedState.mappingCompleteness);
+        setStructuralWarning(selectedState.structuralWarning);
+        setHygieneSummary(selectedState.hygieneSummary);
+        setDuplicateCount(selectedState.duplicateCount);
+      }
+      // Note: workbook (XLSX.WorkBook) cannot be serialized to sessionStorage,
+      // but we have all the parsed sheet data in sheetStates
+    }
+  }, []);
+
+  // Save workbook session to sessionStorage when relevant state changes
+  useEffect(() => {
+    if (sheetNames.length > 0 && Object.keys(sheetStates).length > 0) {
+      saveWorkbookSession({
+        fileName: fileName || '',
+        fileFormat: fileFormat!,
+        sheetNames,
+        sheetStates,
+        selectedSheet,
+      });
+    } else {
+      clearWorkbookSession();
+    }
+  }, [fileName, fileFormat, sheetNames, sheetStates, selectedSheet]);
 
   function resetMappingState(nextTarget?: EntityName) {
     setImportTarget(nextTarget ?? 'clients');
@@ -540,6 +600,30 @@ export function GoogleSheetsPage() {
       ...prev,
       [sheetName]: { ...prev[sheetName], ...updates } as SheetState
     }));
+  }
+
+  function clearWorkbook() {
+    setHeaders(null);
+    setRows([]);
+    setFileName(null);
+    setFileFormat(null);
+    setWorkbook(null);
+    setSheetNames([]);
+    setSelectedSheet(null);
+    setSheetStates({});
+    setFileError(null);
+    setImportTarget('clients');
+    setMapping({});
+    setMappingCompleteness(null);
+    setImportResult(null);
+    setImportError(null);
+    setShowImportConfirm(false);
+    setHygieneSummary(null);
+    setDuplicateCount(0);
+    setStructuralWarning(null);
+    setSingleImportSuccess(null);
+    clearWorkbookSession();
+    toast('Workbook cleared. Upload a new file to start importing.', 'success');
   }
 
   function applyParsed(parsed: { headers: string[]; rows: string[][] }, sourceLabel: string, sheetName?: string) {
@@ -570,6 +654,8 @@ export function GoogleSheetsPage() {
         mappingCompleteness: completeness,
         duplicateCount: 0,
         structuralWarning: warning,
+        imported: false,
+        importedCount: 0,
       };
       updateSheetState(sheetName, newSheetState);
       
@@ -687,6 +773,8 @@ export function GoogleSheetsPage() {
               mappingCompleteness: completeness,
               duplicateCount: 0,
               structuralWarning: warning,
+              imported: false,
+              importedCount: 0,
             };
           } catch {
             // If a sheet fails to parse, mark it as excluded
@@ -700,6 +788,8 @@ export function GoogleSheetsPage() {
               mappingCompleteness: null,
               duplicateCount: 0,
               structuralWarning: 'Could not read this sheet.',
+              imported: false,
+              importedCount: 0,
             };
           }
         }
@@ -893,6 +983,16 @@ export function GoogleSheetsPage() {
       }
 
       console.log('[ledgerly][import] confirmImportAll finished', { totalImported, totalSkipped, sheets: readySheets.map(s => s.sheetName) });
+      
+      // Mark all imported sheets as imported
+      for (const { sheetName, state } of readySheets) {
+        const dataRows = state.rows.filter((row) => row.some((cell) => String(cell || '').trim()));
+        const records = dataRows
+          .map((row) => mapRecord(state.targetEntity, state.headers, row, state.mapping, user?.id))
+          .filter((record): record is NonNullable<typeof record> => record !== null);
+        updateSheetState(sheetName, { imported: true, importedCount: records.length, included: false });
+      }
+      
       setImportResult({ imported: totalImported, skipped: totalSkipped });
       
       if (totalImported > 0) {
@@ -992,10 +1092,36 @@ export function GoogleSheetsPage() {
       console.log('[ledgerly][import] confirmImport finished', { targetTable: importTarget, authUserId: user?.id, imported, skipped });
       setImportResult({ imported, skipped });
       if (imported > 0) {
-        toast(`Imported ${imported} row(s).`, 'success');
-        window.dispatchEvent(new Event('ledgerly:data-updated'));
-        navigate('/app');
-        setTimeout(() => window.dispatchEvent(new Event('ledgerly:data-updated')), 150);
+        // Check if we're in a multi-sheet workbook with unimported tabs
+        const isMultiSheetWorkbook = isMultiSheet && selectedSheet;
+        const unimportedSheets = isMultiSheetWorkbook
+          ? sheetNames.filter(name => {
+              const state = sheetStates[name];
+              return state && !state.imported && state.headers?.length && !state.structuralWarning;
+            })
+          : [];
+
+        if (isMultiSheetWorkbook && unimportedSheets.length > 0) {
+          // Mark current sheet as imported, uncheck include toggle
+          if (selectedSheet) {
+            updateSheetState(selectedSheet, { imported: true, importedCount: imported, included: false });
+          }
+          // Switch to next unimported sheet
+          const nextSheet = unimportedSheets[0];
+          if (nextSheet) {
+            switchSheet(nextSheet);
+          }
+          // Show success banner with remaining tabs info
+          setSingleImportSuccess({ imported, sheetName: selectedSheet || '', remainingTabs: unimportedSheets });
+          toast(`Imported ${imported} row(s) from ${selectedSheet}. ${unimportedSheets.length} tab(s) remaining — ready to import.`, 'success');
+          window.dispatchEvent(new Event('ledgerly:data-updated'));
+        } else {
+          // Single file or all tabs imported - redirect to dashboard
+          toast(`Imported ${imported} row(s).`, 'success');
+          window.dispatchEvent(new Event('ledgerly:data-updated'));
+          navigate('/app');
+          setTimeout(() => window.dispatchEvent(new Event('ledgerly:data-updated')), 150);
+        }
         return;
       }
       toast('No valid rows were imported. Check your mapping and data.', 'error');
@@ -1098,7 +1224,21 @@ export function GoogleSheetsPage() {
         >
           <p style={{ margin: 0, fontSize: 13 }}><strong>Drop a file here</strong> or click to choose</p>
           <p className="muted" style={{ margin: '6px 0 0', fontSize: 11 }}>Supported: CSV, Excel (.xlsx, .xls), JSON</p>
-          {fileName && <p className="muted" style={{ margin: '6px 0 0', fontSize: 11 }}>Selected: {fileName}</p>}
+          {fileName && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8 }}>
+              <p className="muted" style={{ margin: 0, fontSize: 11 }}>Selected: {fileName}</p>
+              {isMultiSheet && (
+                <button
+                  type="button"
+                  className="button button-ghost"
+                  onClick={clearWorkbook}
+                  style={{ fontSize: 11, padding: '4px 8px' }}
+                >
+                  Clear file
+                </button>
+              )}
+            </div>
+          )}
         </div>
         <input ref={fileInputRef} type="file" accept={ACCEPT} style={{ display: 'none' }} onChange={(e) => { const f = e.target.files?.[0]; if (f) void handleFile(f); e.target.value = ''; }} />
         {sheetNames.length > 1 && workbook && fileFormat && (fileFormat === 'xlsx' || fileFormat === 'xls') && (
@@ -1167,6 +1307,11 @@ export function GoogleSheetsPage() {
                     {state?.headers?.length && !state?.structuralWarning && (
                       <span style={{ fontSize: 9, fontWeight: 600, padding: '2px 6px', borderRadius: 4, background: isReady ? '#f2fbf7' : '#fff5f5', color: isReady ? '#1e4d36' : '#c53030' }}>
                         {isReady ? 'Ready' : 'Needs mapping'}
+                      </span>
+                    )}
+                    {state?.imported && (
+                      <span style={{ fontSize: 9, fontWeight: 600, padding: '2px 6px', borderRadius: 4, background: '#f2fbf7', color: '#1e4d36' }}>
+                        Imported ✓
                       </span>
                     )}
                   </div>
@@ -1344,6 +1489,24 @@ return (
       {importResult && (
         <div className="notice" style={{ marginTop: 18, borderColor: '#2db47a' }}>
           Import complete: <strong>{importResult.imported}</strong> row(s) imported{typeof importResult.skipped === 'number' ? <> and <strong>{importResult.skipped}</strong> row(s) skipped</> : ''}.
+        </div>
+      )}
+      {singleImportSuccess && (
+        <div className="notice" style={{ marginTop: 18, borderColor: '#2db47a', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}>
+          <div>
+            <strong>Imported {singleImportSuccess.imported} row(s)</strong> from {singleImportSuccess.sheetName}.
+            {singleImportSuccess.remainingTabs.length > 0 && (
+              <> <br /> Remaining tabs: {singleImportSuccess.remainingTabs.join(', ')} — ready to import.</>
+            )}
+          </div>
+          <button
+            type="button"
+            className="button button-primary"
+            onClick={() => navigate('/app')}
+            style={{ fontSize: 12, fontWeight: 600 }}
+          >
+            View Dashboard →
+          </button>
         </div>
       )}
       {importError && <div className="notice" style={{ marginTop: 18, borderColor: '#e95f67' }}>{importError}</div>}
