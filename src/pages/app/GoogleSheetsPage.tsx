@@ -6,6 +6,7 @@ import { useAuth } from '../../context/AuthContext';
 import { usePreferences } from '../../context/PreferencesContext';
 import { createEntitiesBatch, deleteEntity, entityFields, listEntity } from '../../services/dataService';
 import { toCSV, downloadCSV } from '../../lib/export';
+import { differenceInDays, parseISO } from 'date-fns';
 import type { EntityName, ImportFileFormat } from '../../types';
 
 const ENTITY_OPTIONS: { value: EntityName; label: string; keyFields: string[] }[] = [
@@ -289,13 +290,108 @@ function validateMapping(target: EntityName, headers: string[], mapping: Record<
   for (const field of requiredFields(target)) {
     const header = mapping[field];
     if (!header || !headers.includes(header)) {
-      return `Map a valid column to the required “${field.replace(/_/g, ' ')}” field.`;
+      return `Map a valid column to the required "${field.replace(/_/g, ' ')}" field.`;
     }
   }
   for (const header of Object.values(mapping)) {
     if (header && !headers.includes(header)) return 'A mapped column no longer exists. Load the data again.';
   }
   return null;
+}
+
+type RowWarning = {
+  rowIndex: number;
+  issues: string[];
+};
+
+type HygieneSummary = {
+  totalRows: number;
+  rowsWithWarnings: number;
+  warnings: {
+    blankRequired: number;
+    invalidDates: number;
+    invalidAmounts: number;
+    duplicates: number;
+  };
+  details: RowWarning[];
+};
+
+function analyzeHygiene(target: EntityName, headers: string[], rows: string[][], mapping: Record<string, string>, existingKeys: Set<string>): HygieneSummary {
+  const required = requiredFields(target);
+  const amountFields = target === 'invoices' ? ['amount'] : target === 'expenses' ? ['amount'] : ['total'];
+  const dateFields = target === 'invoices' ? ['issue_date', 'due_date'] : target === 'expenses' ? ['date'] : ['order_date'];
+  const details: RowWarning[] = [];
+
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i];
+    const issues: string[] = [];
+
+    // Check blank required fields
+    for (const field of required) {
+      const header = mapping[field];
+      if (header) {
+        const idx = headers.indexOf(header);
+        const value = idx >= 0 ? row[idx]?.trim() : '';
+        if (!value) issues.push(`Missing required: ${field.replace(/_/g, ' ')}`);
+      }
+    }
+
+    // Check invalid dates
+    for (const field of dateFields) {
+      const header = mapping[field];
+      if (header) {
+        const idx = headers.indexOf(header);
+        const value = idx >= 0 ? row[idx]?.trim() : '';
+        if (value) {
+          const parsed = parseDate(value);
+          const parsedDate = new Date(parsed);
+          if (Number.isNaN(parsedDate.getTime()) || !/^\d{4}-\d{2}-\d{2}$/.test(parsed)) {
+            issues.push(`Invalid date in ${field.replace(/_/g, ' ')}`);
+          }
+        }
+      }
+    }
+
+    // Check invalid amounts
+    for (const field of amountFields) {
+      const header = mapping[field];
+      if (header) {
+        const idx = headers.indexOf(header);
+        const value = idx >= 0 ? row[idx]?.trim() : '';
+        if (value) {
+          const amount = parseAmount(value);
+          if (amount === null || amount <= 0) {
+            issues.push(`Invalid amount in ${field.replace(/_/g, ' ')}`);
+          }
+        }
+      }
+    }
+
+    // Check duplicates against existing data
+    const testRecord = mapRecord(target, headers, row, mapping);
+    if (testRecord) {
+      const key = recordDuplicateKey(target, testRecord as Record<string, unknown>);
+      if (existingKeys.has(key)) {
+        issues.push('Duplicate of existing record');
+      }
+    }
+
+    if (issues.length > 0) {
+      details.push({ rowIndex: i, issues });
+    }
+  }
+
+  const blankRequired = details.filter(d => d.issues.some(i => i.startsWith('Missing required'))).length;
+  const invalidDates = details.filter(d => d.issues.some(i => i.startsWith('Invalid date'))).length;
+  const invalidAmounts = details.filter(d => d.issues.some(i => i.startsWith('Invalid amount'))).length;
+  const duplicates = details.filter(d => d.issues.some(i => i.startsWith('Duplicate'))).length;
+
+  return {
+    totalRows: rows.length,
+    rowsWithWarnings: details.length,
+    warnings: { blankRequired, invalidDates, invalidAmounts, duplicates },
+    details,
+  };
 }
 
 export function GoogleSheetsPage() {
@@ -361,6 +457,8 @@ export function GoogleSheetsPage() {
   const [importSources, setImportSources] = useState<ImportSource[]>(() => loadImportSources());
   const [duplicateCount, setDuplicateCount] = useState(0);
   const [mappingCompleteness, setMappingCompleteness] = useState<{ mapped: number; total: number; required: number; requiredTotal: number; isComplete: boolean } | null>(null);
+  const [hygieneSummary, setHygieneSummary] = useState<HygieneSummary | null>(null);
+  const [showHygieneDetails, setShowHygieneDetails] = useState(false);
 
   function resetMappingState(nextTarget?: EntityName) {
     setImportTarget(nextTarget ?? 'clients');
@@ -489,7 +587,19 @@ export function GoogleSheetsPage() {
     if (!mappingComplete?.isComplete) { setImportError('Please map all required fields before importing.'); return; }
     setImportError(null);
     setImportResult(null);
-    setShowImportConfirm(true);
+    // Compute hygiene summary
+    void (async () => {
+      try {
+        const existing = await listEntity(importTarget);
+        const existingKeys = new Set(existing.map((record) => recordDuplicateKey(importTarget, record as Record<string, unknown>)));
+        const summary = analyzeHygiene(importTarget, headers, rows, mapping, existingKeys);
+        setHygieneSummary(summary);
+        setShowHygieneDetails(false);
+      } catch {
+        setHygieneSummary(null);
+      }
+      setShowImportConfirm(true);
+    })();
   }
 
   async function confirmImport() {
@@ -866,7 +976,7 @@ export function GoogleSheetsPage() {
 
       {showImportConfirm && (
         <div className="modal-backdrop">
-          <div className="modal" role="dialog" aria-labelledby="import-confirm-title">
+          <div className="modal" role="dialog" aria-labelledby="import-confirm-title" style={{ maxWidth: 560 }}>
             <div className="modal-header">
               <div>
                 <h3 id="import-confirm-title" style={{ margin: 0, fontSize: 16, fontWeight: 600, color: '#2d3748' }}>Confirm import</h3>
@@ -874,13 +984,49 @@ export function GoogleSheetsPage() {
               </div>
               <button className="icon-button" onClick={cancelImport} aria-label="Close" disabled={importing}>&times;</button>
             </div>
-            <div className="modal-body">
+            <div className="modal-body" style={{ maxHeight: 400, overflow: 'auto' }}>
               <p style={{ margin: 0, fontSize: 12, lineHeight: 1.6, color: '#556274' }}>
                 Import <strong>{activeLabel}</strong> into <strong>{ENTITY_OPTIONS.find((o) => o.value === importTarget)?.label}</strong>.
               </p>
               <p style={{ margin: '10px 0 0', fontSize: 11, color: '#718096' }}>
                 Rows that do not match the required columns will be skipped. On success you will be redirected to the dashboard.
               </p>
+              {hygieneSummary && (
+                <div style={{ marginTop: 16, padding: 12, background: '#fafbfc', borderRadius: 8, border: '1px solid #e8ebf1' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+                    <span style={{ fontSize: 12, fontWeight: 600, color: '#2d3748' }}>Pre-import hygiene check</span>
+                    <button
+                      type="button"
+                      className="button button-ghost"
+                      style={{ fontSize: 11, padding: '4px 8px' }}
+                      onClick={() => setShowHygieneDetails(!showHygieneDetails)}
+                    >
+                      {showHygieneDetails ? 'Hide details' : 'Show details'}
+                    </button>
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8, marginBottom: 8 }}>
+                    <HygieneStat label="Blank required" value={hygieneSummary.warnings.blankRequired} color="#e53e3e" />
+                    <HygieneStat label="Invalid dates" value={hygieneSummary.warnings.invalidDates} color="#f59e0b" />
+                    <HygieneStat label="Invalid amounts" value={hygieneSummary.warnings.invalidAmounts} color="#c53030" />
+                    <HygieneStat label="Duplicates" value={hygieneSummary.warnings.duplicates} color="#718096" />
+                  </div>
+                  <p style={{ margin: '4px 0 0', fontSize: 11, color: '#718096' }}>
+                    {hygieneSummary.rowsWithWarnings} of {hygieneSummary.totalRows} row(s) have warnings. Clean rows will import normally.
+                  </p>
+                  {showHygieneDetails && hygieneSummary.details.length > 0 && (
+                    <div style={{ marginTop: 12, maxHeight: 200, overflow: 'auto' }}>
+                      {hygieneSummary.details.slice(0, 50).map((d, i) => (
+                        <div key={i} style={{ fontSize: 11, color: '#556274', padding: '6px 8px', background: '#fff', border: '1px solid #e8ebf1', borderRadius: 6, marginBottom: 6 }}>
+                          <strong>Row {d.rowIndex + 1}:</strong> {d.issues.join(', ')}
+                        </div>
+                      ))}
+                      {hygieneSummary.details.length > 50 && (
+                        <p style={{ margin: '8px 0 0', fontSize: 11, color: '#9aa4b2' }}>…and {hygieneSummary.details.length - 50} more rows with warnings</p>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
             <div className="form-actions">
               <button className="button button-secondary" onClick={cancelImport} disabled={importing}>Cancel</button>
