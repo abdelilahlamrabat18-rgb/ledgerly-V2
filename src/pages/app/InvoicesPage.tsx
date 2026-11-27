@@ -6,9 +6,10 @@ import { Modal } from '../../components/shared/Modal';
 import { PageError } from '../../components/shared/PageError';
 import { StatusPill } from '../../components/shared/StatusPill';
 import { useEntity } from '../../hooks/useBusinessData';
+import { usePreferences } from '../../context/PreferencesContext';
 import { useToast } from '../../context/ToastContext';
 import type { Client, Invoice, InvoiceStatus } from '../../types';
-import { formatCurrency, formatDate, today, validateAmount } from '../../lib/utils';
+import { formatDate, today, validateAmount } from '../../lib/utils';
 import { toCSV, downloadCSV } from '../../lib/export';
 
 type InvoiceForm = { invoice_number: string; client_id: string; amount: string; status: InvoiceStatus; issue_date: string; due_date: string; notes: string };
@@ -17,6 +18,7 @@ const emptyForm: InvoiceForm = { invoice_number: '', client_id: '', amount: '', 
 export function InvoicesPage() {
   const invoices = useEntity<Invoice>('invoices');
   const clients = useEntity<Client>('clients');
+  const { formatCurrency } = usePreferences();
   const { toast } = useToast();
   const [query, setQuery] = useState('');
   const [status, setStatus] = useState('all');

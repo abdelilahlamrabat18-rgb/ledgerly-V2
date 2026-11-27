@@ -5,9 +5,10 @@ import { LoadingState } from '../../components/shared/LoadingState';
 import { Modal } from '../../components/shared/Modal';
 import { PageError } from '../../components/shared/PageError';
 import { useEntity } from '../../hooks/useBusinessData';
+import { usePreferences } from '../../context/PreferencesContext';
 import { useToast } from '../../context/ToastContext';
 import type { Expense } from '../../types';
-import { formatCurrency, formatDate, today, validateAmount } from '../../lib/utils';
+import { formatDate, today, validateAmount } from '../../lib/utils';
 import { toCSV, downloadCSV } from '../../lib/export';
 
 type ExpenseForm = { description: string; category: string; amount: string; date: string; notes: string };
@@ -16,6 +17,7 @@ const categories = ['Software', 'Workspace', 'Meals', 'Travel', 'Office', 'Marke
 
 export function ExpensesPage() {
   const expenses = useEntity<Expense>('expenses');
+  const { formatCurrency } = usePreferences();
   const { toast } = useToast();
   const [query, setQuery] = useState('');
   const [category, setCategory] = useState('all');

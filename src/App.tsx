@@ -1,8 +1,9 @@
-import { lazy, Suspense, type ReactNode } from 'react';
+import { lazy, Suspense, type ReactNode, useEffect } from 'react';
 import { Navigate, Outlet, Route, Routes, useLocation } from 'react-router-dom';
 import { AppShell } from './components/layout/AppShell';
 import { useAuth } from './context/AuthContext';
 import { useBilling } from './context/BillingContext';
+import { PreferencesProvider, usePreferences } from './context/PreferencesContext';
 
 const LandingPage = lazy(() => import('./pages/LandingPage').then((module) => ({ default: module.LandingPage })));
 const PrivacyPage = lazy(() => import('./pages/PrivacyPage').then((module) => ({ default: module.PrivacyPage })));
@@ -39,12 +40,6 @@ function ProtectedRoute() {
   return <AppShell><Outlet /></AppShell>;
 }
 
-/**
- * Core-feature routes. After the trial expires (or when no entitlement
- * exists), these routes redirect to a paywall rather than silently serving
- * the application. The decision is made from the server-authoritative
- * billing state, never from a query parameter or local flag.
- */
 function CoreRoute() {
   const { user, loading, isDemo } = useAuth();
   const { loading: billingLoading, hasCoreAccess } = useBilling();
@@ -61,35 +56,51 @@ function AuthRedirect() {
   return user || isDemo ? <Navigate to="/app" replace /> : <Outlet />;
 }
 
+function LanguageDirection() {
+  const { language } = usePreferences();
+  useEffect(() => {
+    document.documentElement.dir = language === 'ar' ? 'rtl' : 'ltr';
+    document.documentElement.lang = language;
+  }, [language]);
+  return null;
+}
+
 export default function App() {
-  return <LazyBoundary><Routes>
-    <Route path="/" element={<LandingPage />} />
-    <Route path="/privacy" element={<PrivacyPage />} />
-    <Route path="/terms" element={<TermsPage />} />
-<Route path="/refund-policy" element={<RefundPolicyPage />} />
-    <Route element={<AuthRedirect />}>
-      <Route path="/login" element={<LoginPage />} />
-      <Route path="/signup" element={<SignupPage />} />
-      <Route path="/forgot-password" element={<ForgotPasswordPage />} />
-      <Route path="/reset-password" element={<ResetPasswordPage />} />
-    </Route>
-    <Route element={<ProtectedRoute />}>
-      <Route path="/app/billing" element={<BillingPage />} />
-      <Route path="/app/settings" element={<SettingsPage />} />
-    </Route>
-    <Route element={<CoreRoute />}>
-      <Route path="/app" element={<DashboardPage />} />
-      <Route path="/app/transactions" element={<TransactionsPage />} />
-      <Route path="/app/analytics" element={<AnalyticsPage />} />
-      <Route path="/app/clients" element={<ClientsPage />} />
-      <Route path="/app/invoices" element={<InvoicesPage />} />
-      <Route path="/app/expenses" element={<ExpensesPage />} />
-      <Route path="/app/orders" element={<OrdersPage />} />
-      <Route path="/app/google-sheets" element={<GoogleSheetsPage />} />
-    </Route>
-    <Route path="/transactions" element={<Navigate to="/app/transactions" replace />} />
-    <Route path="/analytics" element={<Navigate to="/app/analytics" replace />} />
-    <Route path="/settings" element={<Navigate to="/app/settings" replace />} />
-    <Route path="*" element={<Navigate to="/" replace />} />
-  </Routes></LazyBoundary>;
+  return (
+    <PreferencesProvider>
+      <LanguageDirection />
+      <LazyBoundary>
+        <Routes>
+      <Route path="/" element={<LandingPage />} />
+      <Route path="/privacy" element={<PrivacyPage />} />
+      <Route path="/terms" element={<TermsPage />} />
+  <Route path="/refund-policy" element={<RefundPolicyPage />} />
+      <Route element={<AuthRedirect />}>
+        <Route path="/login" element={<LoginPage />} />
+        <Route path="/signup" element={<SignupPage />} />
+        <Route path="/forgot-password" element={<ForgotPasswordPage />} />
+        <Route path="/reset-password" element={<ResetPasswordPage />} />
+      </Route>
+      <Route element={<ProtectedRoute />}>
+        <Route path="/app/billing" element={<BillingPage />} />
+        <Route path="/app/settings" element={<SettingsPage />} />
+      </Route>
+      <Route element={<CoreRoute />}>
+        <Route path="/app" element={<DashboardPage />} />
+        <Route path="/app/transactions" element={<TransactionsPage />} />
+        <Route path="/app/analytics" element={<AnalyticsPage />} />
+        <Route path="/app/clients" element={<ClientsPage />} />
+        <Route path="/app/invoices" element={<InvoicesPage />} />
+        <Route path="/app/expenses" element={<ExpensesPage />} />
+        <Route path="/app/orders" element={<OrdersPage />} />
+        <Route path="/app/google-sheets" element={<GoogleSheetsPage />} />
+      </Route>
+      <Route path="/transactions" element={<Navigate to="/app/transactions" replace />} />
+      <Route path="/analytics" element={<Navigate to="/app/analytics" replace />} />
+      <Route path="/settings" element={<Navigate to="/app/settings" replace />} />
+      <Route path="*" element={<Navigate to="/" replace />} />
+    </Routes>
+      </LazyBoundary>
+    </PreferencesProvider>
+  );
 }

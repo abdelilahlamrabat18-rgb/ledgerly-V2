@@ -6,9 +6,10 @@ import { Modal } from '../../components/shared/Modal';
 import { PageError } from '../../components/shared/PageError';
 import { StatusPill } from '../../components/shared/StatusPill';
 import { useEntity } from '../../hooks/useBusinessData';
+import { usePreferences } from '../../context/PreferencesContext';
 import { useToast } from '../../context/ToastContext';
 import type { Client, Order, OrderStatus } from '../../types';
-import { formatCurrency, formatDate, today, validateAmount, validateQuantity } from '../../lib/utils';
+import { formatDate, today, validateAmount, validateQuantity } from '../../lib/utils';
 import { toCSV, downloadCSV } from '../../lib/export';
 
 type OrderForm = { client_id: string; product: string; quantity: string; total: string; status: OrderStatus; order_date: string; notes: string };
@@ -17,6 +18,7 @@ const emptyForm: OrderForm = { client_id: '', product: '', quantity: '1', total:
 export function OrdersPage() {
   const orders = useEntity<Order>('orders');
   const clients = useEntity<Client>('clients');
+  const { formatCurrency } = usePreferences();
   const { toast } = useToast();
   const [query, setQuery] = useState('');
   const [status, setStatus] = useState('all');

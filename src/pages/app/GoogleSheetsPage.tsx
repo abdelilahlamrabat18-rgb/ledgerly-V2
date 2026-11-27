@@ -3,14 +3,15 @@ import { useNavigate } from 'react-router-dom';
 import * as XLSX from 'xlsx';
 import { useToast } from '../../context/ToastContext';
 import { useAuth } from '../../context/AuthContext';
+import { usePreferences } from '../../context/PreferencesContext';
 import { createEntitiesBatch, deleteEntity, entityFields, listEntity } from '../../services/dataService';
 import type { EntityName, ImportFileFormat } from '../../types';
 
-const ENTITY_OPTIONS: { value: EntityName; label: string }[] = [
-  { value: 'clients', label: 'Clients' },
-  { value: 'invoices', label: 'Invoices' },
-  { value: 'expenses', label: 'Expenses' },
-  { value: 'orders', label: 'Orders' },
+const ENTITY_OPTIONS: { value: EntityName; label: string; keyFields: string[] }[] = [
+  { value: 'clients', label: 'Clients', keyFields: ['name', 'email', 'company'] },
+  { value: 'invoices', label: 'Invoices', keyFields: ['invoice_number', 'issue_date', 'due_date', 'amount', 'status'] },
+  { value: 'expenses', label: 'Expenses', keyFields: ['description', 'amount', 'category', 'date'] },
+  { value: 'orders', label: 'Orders', keyFields: ['product', 'total', 'quantity', 'order_date', 'status'] },
 ];
 
 const MAX_ROWS = 5000;
@@ -154,16 +155,27 @@ function isSummaryReport(headers: string[], rows: string[][]) {
 
 function autoMapHeaders(headers: string[], target: EntityName) {
   const mapping: Record<string, string> = {};
+  const normalizedHeaders = headers.map(h => normalizeHeader(h));
   for (const field of entityFields[target]) {
     const normalizedField = normalizeHeader(field);
-    const header = headers.find((h) => normalizeHeader(h) === normalizedField);
-    if (header) mapping[field] = header;
+    const idx = normalizedHeaders.findIndex(h => h === normalizedField);
+    if (idx >= 0) mapping[field] = headers[idx];
   }
   return mapping;
 }
 
 function scoreEntity(headers: string[], target: EntityName) {
-  return entityFields[target].filter((field) => headers.some((header) => normalizeHeader(header) === normalizeHeader(field))).length;
+  const normalizedHeaders = headers.map(h => normalizeHeader(h));
+  let score = 0;
+  const option = ENTITY_OPTIONS.find(o => o.value === target);
+  const keyFields = option?.keyFields || [];
+  for (const field of entityFields[target]) {
+    const normalizedField = normalizeHeader(field);
+    if (normalizedHeaders.includes(normalizedField)) {
+      score += keyFields.includes(field) ? 3 : 1;
+    }
+  }
+  return score;
 }
 
 function detectBestEntity(headers: string[]): EntityName {
@@ -177,6 +189,14 @@ function detectBestEntity(headers: string[]): EntityName {
     }
   }
   return best;
+}
+
+function getMappingCompleteness(target: EntityName, headers: string[], mapping: Record<string, string>) {
+  const fields = entityFields[target];
+  const mapped = fields.filter(f => mapping[f] && headers.includes(mapping[f])).length;
+  const required = requiredFields(target).filter(f => mapping[f] && headers.includes(mapping[f])).length;
+  const requiredTotal = requiredFields(target).length;
+  return { mapped, total: fields.length, required, requiredTotal, isComplete: required === requiredTotal };
 }
 
 function chooseInitialSheet(names: string[]): string | null {
@@ -236,44 +256,47 @@ function validateMapping(target: EntityName, headers: string[], mapping: Record<
   }
   return null;
 }
-function mapRecord(target: EntityName, headers: string[], row: string[], mapping: Record<string, string>, userId?: string) {
-  const get = (field: string) => rowValue(row, headers, mapping, field);
-  const opt = (field: string) => { const v = get(field); return v || null; };
-  const common: Record<string, unknown> = userId ? { user_id: userId } : {};
-  if (target === 'clients') {
-    const name = get('name');
-    return name ? { ...common, name, email: opt('email'), phone: opt('phone'), company: opt('company'), address: opt('address'), notes: opt('notes') } : null;
-  }
-  if (target === 'invoices') {
-    const invoiceNumber = get('invoice_number');
-    const amount = parseAmount(get('amount'));
-    if (!invoiceNumber || amount === null || amount < 0) return null;
-    const validStatus = ['draft', 'pending', 'paid', 'overdue', 'cancelled'];
-    const status = get('status').toLowerCase();
-    const clientId = get('client_id');
-    return { ...common, invoice_number: invoiceNumber, amount, status: validStatus.includes(status) ? status : 'draft', issue_date: parseDate(get('issue_date')), due_date: get('due_date') ? parseDate(get('due_date')) : null, notes: opt('notes'), ...(clientId ? { client_id: clientId } : {}) };
-  }
-  if (target === 'expenses') {
-    const description = get('description');
-    const amount = parseAmount(get('amount'));
-    if (!description || amount === null || amount < 0) return null;
-    return { ...common, description, category: get('category') || 'Other', amount, date: parseDate(get('date')), notes: opt('notes') };
-  }
-  const product = get('product');
-  const total = parseAmount(get('total'));
-  if (!product || total === null || total < 0) return null;
-  const quantity = parseAmount(get('quantity')) || 1;
-  const validStatus = ['pending', 'processing', 'completed', 'cancelled'];
-  const status = get('status').toLowerCase();
-  const clientId = get('client_id');
-  return { ...common, product, quantity: Math.max(1, Math.floor(quantity)), total, status: validStatus.includes(status) ? status : 'pending', order_date: parseDate(get('order_date')), notes: opt('notes'), ...(clientId ? { client_id: clientId } : {}) };
-}
 
 export function GoogleSheetsPage() {
   const { toast } = useToast();
   const { user } = useAuth();
+  const { getVendorCategory, setVendorCategory } = usePreferences();
   const navigate = useNavigate();
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  function mapRecord(target: EntityName, headers: string[], row: string[], mapping: Record<string, string>, userId?: string) {
+    const get = (field: string) => rowValue(row, headers, mapping, field);
+    const opt = (field: string) => { const v = get(field); return v || null; };
+    const common: Record<string, unknown> = userId ? { user_id: userId } : {};
+    if (target === 'clients') {
+      const name = get('name');
+      return name ? { ...common, name, email: opt('email'), phone: opt('phone'), company: opt('company'), address: opt('address'), notes: opt('notes') } : null;
+    }
+    if (target === 'invoices') {
+      const invoiceNumber = get('invoice_number');
+      const amount = parseAmount(get('amount'));
+      if (!invoiceNumber || amount === null || amount < 0) return null;
+      const validStatus = ['draft', 'pending', 'paid', 'overdue', 'cancelled'];
+      const status = get('status').toLowerCase();
+      const clientId = get('client_id');
+      return { ...common, invoice_number: invoiceNumber, amount, status: validStatus.includes(status) ? status : 'draft', issue_date: parseDate(get('issue_date')), due_date: get('due_date') ? parseDate(get('due_date')) : null, notes: opt('notes'), ...(clientId ? { client_id: clientId } : {}) };
+    }
+    if (target === 'expenses') {
+      const description = get('description');
+      const amount = parseAmount(get('amount'));
+      if (!description || amount === null || amount < 0) return null;
+      const vendorCategory = getVendorCategory(description);
+      return { ...common, description, category: get('category') || vendorCategory || 'Other', amount, date: parseDate(get('date')), notes: opt('notes') };
+    }
+    const product = get('product');
+    const total = parseAmount(get('total'));
+    if (!product || total === null || total < 0) return null;
+    const quantity = parseAmount(get('quantity')) || 1;
+    const validStatus = ['pending', 'processing', 'completed', 'cancelled'];
+    const status = get('status').toLowerCase();
+    const clientId = get('client_id');
+    return { ...common, product, quantity: Math.max(1, Math.floor(quantity)), total, status: validStatus.includes(status) ? status : 'pending', order_date: parseDate(get('order_date')), notes: opt('notes'), ...(clientId ? { client_id: clientId } : {}) };
+  }
 
   const [headers, setHeaders] = useState<string[] | null>(null);
   const [rows, setRows] = useState<string[][]>([]);
@@ -296,10 +319,12 @@ export function GoogleSheetsPage() {
   const [skipDuplicates, setSkipDuplicates] = useState(true);
   const [importSources, setImportSources] = useState<ImportSource[]>(() => loadImportSources());
   const [duplicateCount, setDuplicateCount] = useState(0);
+  const [mappingCompleteness, setMappingCompleteness] = useState<{ mapped: number; total: number; required: number; requiredTotal: number; isComplete: boolean } | null>(null);
 
   function resetMappingState(nextTarget?: EntityName) {
     setImportTarget(nextTarget ?? 'clients');
     setMapping({});
+    setMappingCompleteness(null);
     setImportResult(null);
     setImportError(null);
     setShowImportConfirm(false);
@@ -318,6 +343,7 @@ export function GoogleSheetsPage() {
     }
     setImportTarget(bestTarget);
     setMapping(nextMapping);
+    setMappingCompleteness(getMappingCompleteness(bestTarget, parsed.headers, nextMapping));
     setHeaders(parsed.headers);
     setRows(parsed.rows);
     toast(`Loaded ${sourceLabel}. Map columns to import.`, 'success');
@@ -406,6 +432,11 @@ export function GoogleSheetsPage() {
     return validateMapping(importTarget, headers, mapping);
   }, [headers, importTarget, mapping]);
 
+  const mappingComplete = useMemo(() => {
+    if (!headers || !headers.length) return null;
+    return getMappingCompleteness(importTarget, headers, mapping);
+  }, [headers, importTarget, mapping]);
+
   function updateMapping(field: string, header: string) {
     setMapping((prev) => ({ ...prev, [field]: header }));
   }
@@ -414,13 +445,18 @@ export function GoogleSheetsPage() {
   function startImport() {
     if (structuralWarning) { setImportError(structuralWarning); return; }
     if (!headers || !headers.length) { setImportError('Load a file with a header row before importing.'); return; }
+    if (!mappingComplete?.isComplete) { setImportError('Please map all required fields before importing.'); return; }
     setImportError(null);
     setImportResult(null);
     setShowImportConfirm(true);
   }
 
   async function confirmImport() {
-    if (mappingError || structuralWarning || !headers) { setImportError(mappingError || structuralWarning || 'Load a file before importing.'); setShowImportConfirm(false); return; }
+    if (structuralWarning || !headers || !mappingComplete?.isComplete) {
+      setImportError(structuralWarning || (!mappingComplete?.isComplete ? 'Please map all required fields before importing.' : 'Load a file before importing.'));
+      setShowImportConfirm(false);
+      return;
+    }
     setImporting(true);
     setImportError(null);
     setImportResult(null);
@@ -452,6 +488,17 @@ export function GoogleSheetsPage() {
         }
       }
       saveMapping(importTarget, mapping);
+      // Save vendor-category memory for expenses
+      if (importTarget === 'expenses') {
+        for (const record of recordsToImport) {
+          const expenseRecord = record as Record<string, unknown> & { description?: string; category?: string };
+          const description = expenseRecord.description;
+          const category = expenseRecord.category;
+          if (description && category && category !== 'Other') {
+            setVendorCategory(description, category);
+          }
+        }
+      }
       if (recordsToImport.length) {
         try {
           const inserted = await createEntitiesBatch(importTarget, recordsToImport as Record<string, unknown>[], user?.id);
@@ -557,8 +604,8 @@ export function GoogleSheetsPage() {
       </div>
 
       <section className="card" style={{ padding: 20, marginBottom: 18 }}>
-        <p className="eyebrow" style={{ margin: 0 }}>Import from file</p>
-        <p className="muted" style={{ margin: '6px 0 12px', fontSize: 12 }}>Drag and drop or choose a <strong>.csv</strong>, <strong>.xlsx</strong>, <strong>.xls</strong>, or <strong>.json</strong> file (max 10 MB, 5,000 data rows). First row must be headers (or JSON array of objects). Excel workbooks can contain multiple sheets.</p>
+        <h3 style={{ margin: '0 0 4px', fontSize: 14, fontWeight: 600, color: '#2d3748' }}>Import from file</h3>
+        <p style={{ margin: '0 0 14px', fontSize: 12, color: '#718096' }}>Drag and drop a CSV, Excel, or JSON file (max 10 MB, 5,000 data rows). First row must be headers. Excel workbooks can contain multiple sheets.</p>
         <div
           role="button"
           tabIndex={0}
@@ -600,22 +647,23 @@ export function GoogleSheetsPage() {
         <section className="card" style={{ padding: 20, marginTop: 0 }}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', marginBottom: 16 }}>
             <div>
-              <p className="eyebrow" style={{ margin: 0 }}>Preview & map</p>
-              <h3 style={{ margin: '4px 0 0', fontSize: 15 }}>{activeLabel}</h3>
+              <h3 style={{ margin: 0, fontSize: 14, fontWeight: 600, color: '#2d3748' }}>Preview & map</h3>
+              <p style={{ margin: '4px 0 0', fontSize: 12, color: '#718096' }}>{activeLabel}</p>
             </div>
-            <span className="muted" style={{ fontSize: 11 }}>{headers ? `${rows.length} data row(s) available` : ''}</span>
+            <span style={{ fontSize: 11, color: '#9aa4b2' }}>{headers ? `${rows.length} data row(s) available` : ''}</span>
           </div>
 
           {fileLoading ? (
             <p>Loading file…</p>
           ) : !headers || !headers.length ? (
-            <div className="empty-state">
-              <p>This file is empty or has no header row.</p>
-              <p className="muted">Add column headers to the first row, then try again.</p>
+            <div style={{ padding: '32px 16px', textAlign: 'center', background: '#fafbfc', borderRadius: 10, border: '1px dashed #e8ebf1' }}>
+              <div style={{ fontSize: 28, marginBottom: 8 }}>📄</div>
+              <p style={{ margin: '0 0 6px', fontSize: 14, fontWeight: 500, color: '#3d4852' }}>No data to preview</p>
+              <p style={{ margin: 0, fontSize: 12, color: '#718096' }}>This file appears empty or has no header row. Add column headers to the first row and try again.</p>
             </div>
           ) : (
             <div>
-              <p className="muted" style={{ marginTop: 0, marginBottom: 10, fontSize: 11 }}>
+              <p style={{ margin: '0 0 14px', fontSize: 12, color: '#718096' }}>
                 Showing a preview of the first {previewRows.length} row(s). Map your columns, then import.
               </p>
               <div className="table-scroll" style={{ border: '1px solid #e8ebf1', borderRadius: 8, overflow: 'hidden' }}>
@@ -632,33 +680,79 @@ export function GoogleSheetsPage() {
               </div>
 
               <div style={{ marginTop: 18 }}>
-                <p className="muted" style={{ marginTop: 0, marginBottom: 10, fontSize: 11, textTransform: 'uppercase', letterSpacing: '.08em' }}>Map columns to Ledgerly fields</p>
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: 10 }}>
-                  {ENTITY_OPTIONS.map((option) => (
-                    <div key={option.value} style={{ border: '1px solid #e8ebf1', borderRadius: 8, padding: '10px 12px' }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-                        <label style={{ fontSize: 11, fontWeight: 700, color: '#556274' }}>{option.label}</label>
-                        <input type="radio" name="import-target" checked={importTarget === option.value} onChange={() => { setImportTarget(option.value); setMapping({}); setImportResult(null); setImportError(null); }} />
-                      </div>
-                      {entityFields[option.value].map((field) => (
-                        <div key={field} style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 6 }}>
-                          <label style={{ fontSize: 10, color: '#677487', flex: '0 0 auto', whiteSpace: 'nowrap' }}>{field}</label>
-                          <select className="form-select" style={{ padding: '6px 8px', fontSize: 10 }} value={mapping[field] || ''} onChange={(e) => updateMapping(field, e.target.value)}>
-                            <option value="">— Not mapped —</option>
-                            {headers.map((h, i) => (<option key={`${h}-${i}`} value={h}>{h || `Column ${i + 1}`}</option>))}
-                          </select>
+                <h3 style={{ margin: '0 0 10px', fontSize: 14, fontWeight: 600, color: '#2d3748' }}>Map columns to Ledgerly fields</h3>
+                <p style={{ margin: '0 0 14px', fontSize: 12, color: '#718096' }}>Review the suggested matches and adjust as needed. Required fields are marked.</p>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))', gap: 12 }}>
+                  {ENTITY_OPTIONS.map((option) => {
+                    const completeness = importTarget === option.value ? mappingComplete : getMappingCompleteness(option.value, headers || [], mapping);
+                    const isActive = importTarget === option.value;
+                    return (
+                      <div
+                        key={option.value}
+                        style={{
+                          border: isActive ? '2px solid #2db47a' : '1px solid #e8ebf1',
+                          borderRadius: 10,
+                          padding: '12px 14px',
+                          background: isActive ? '#f2fbf7' : '#fff',
+                          transition: 'border-color 0.15s, box-shadow 0.15s, background 0.15s',
+                          boxShadow: isActive ? '0 0 0 3px rgba(45, 180, 122, 0.1)' : 'none',
+                        }}
+                      >
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+                          <label style={{ fontSize: 12, fontWeight: 600, color: isActive ? '#1e4d36' : '#3d4852' }}>{option.label}</label>
+                          <input
+                            type="radio"
+                            name="import-target"
+                            checked={isActive}
+                            onChange={() => { setImportTarget(option.value); setMapping({}); setImportResult(null); setImportError(null); }}
+                            style={{ accentColor: '#2db47a' }}
+                          />
                         </div>
-                      ))}
-                    </div>
-                  ))}
+                        {entityFields[option.value].map((field) => {
+                          const required = requiredFields(option.value).includes(field);
+                          const mappedHeader = mapping[field];
+                          const isMapped = mappedHeader && (headers || []).includes(mappedHeader);
+                          return (
+                            <div key={field} style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8 }}>
+                              <span style={{ fontSize: 11, color: '#677487', flex: '0 0 auto', whiteSpace: 'nowrap', display: 'flex', alignItems: 'center', gap: 4 }}>
+                                {field.replace(/_/g, ' ')}
+                                {required && <span style={{ fontSize: 9, fontWeight: 700, color: '#e53e3e', background: '#fff5f5', padding: '1px 5px', borderRadius: 4 }}>Required</span>}
+                              </span>
+                              <select
+                                className="form-select"
+                                style={{ padding: '7px 10px', fontSize: 11, minWidth: 140, flex: 1 }}
+                                value={mapping[field] || ''}
+                                onChange={(e) => updateMapping(field, e.target.value)}
+                                disabled={importTarget !== option.value}
+                              >
+                                <option value="">— Not mapped —</option>
+                                {(headers || []).map((h, i) => (
+                                  <option key={`${h}-${i}`} value={h}>{h || `Column ${i + 1}`}</option>
+                                ))}
+                              </select>
+                              {isMapped && <span style={{ fontSize: 10, color: '#2db47a', fontWeight: 600 }}>Mapped</span>}
+                            </div>
+                          );
+                        })}
+                        {completeness && (
+                          <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px solid #e8ebf1', display: 'flex', alignItems: 'center', gap: 8, fontSize: 11 }}>
+                            <span style={{ color: completeness.isComplete ? '#2db47a' : '#e53e3e', fontWeight: 600 }}>
+                              {completeness.isComplete ? '✓ Ready to import' : `${completeness.required}/${completeness.requiredTotal} required fields mapped`}
+                            </span>
+                            <span style={{ color: '#9aa4b2' }}>{completeness.mapped}/{completeness.total} fields matched</span>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
                 <div style={{ marginTop: 16, display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-                  <button className="button button-primary" onClick={startImport} disabled={importing || !!mappingError || !!structuralWarning}>Import Data</button>
+                  <button className="button button-primary" onClick={startImport} disabled={importing || !!structuralWarning || !mappingComplete?.isComplete} style={{ fontWeight: 600 }}>Import Data</button>
                   <button className="button button-ghost" onClick={resetMapping}>Reset mapping</button>
-                  {mappingError && <span className="muted" style={{ fontSize: 11 }}>{mappingError}</span>}
+                  {mappingError && <span style={{ fontSize: 11, color: '#e53e3e', background: '#fff5f5', padding: '4px 8px', borderRadius: 6 }}>{mappingError}</span>}
                   {headers && rows.length > 0 && (
                     <div style={{ width: '100%', marginTop: 8 }}>
-                      <p className="muted" style={{ margin: 0, fontSize: 11 }}>
+                      <p style={{ margin: 0, fontSize: 11, color: '#718096' }}>
                         {Math.max(rows.length - duplicateCount, 0)} new row(s) and {duplicateCount} potential duplicate(s) detected.
                       </p>
                       <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, marginTop: 6, fontSize: 11, color: '#556274' }}>
@@ -682,21 +776,28 @@ export function GoogleSheetsPage() {
       {importError && <div className="notice" style={{ marginTop: 18, borderColor: '#e95f67' }}>{importError}</div>}
 
       <section className="card" style={{ padding: 20, marginTop: 18 }}>
-        <p className="eyebrow" style={{ margin: 0 }}>Imported spreadsheets</p>
+        <h3 style={{ margin: '0 0 4px', fontSize: 14, fontWeight: 600, color: '#2d3748' }}>Imported spreadsheets</h3>
+        <p style={{ margin: '0 0 14px', fontSize: 12, color: '#718096' }}>Review, re-activate, or remove past import batches.</p>
         {importSources.length === 0 ? (
-          <p className="muted" style={{ marginTop: 8, fontSize: 12 }}>No imported spreadsheet batches yet.</p>
+          <div style={{ padding: '28px 16px', textAlign: 'center', background: '#fafbfc', borderRadius: 10, border: '1px dashed #e8ebf1' }}>
+            <div style={{ fontSize: 28, marginBottom: 8 }}>📥</div>
+            <p style={{ margin: '0 0 6px', fontSize: 14, fontWeight: 500, color: '#3d4852' }}>No import batches yet</p>
+            <p style={{ margin: 0, fontSize: 12, color: '#718096' }}>Upload a file and import your first batch of data to see it here.</p>
+          </div>
         ) : (
           <div style={{ marginTop: 12, display: 'grid', gap: 10 }}>
             {importSources.map((source) => (
-              <div key={source.batchId} style={{ border: '1px solid #e8ebf1', borderRadius: 8, padding: 12, display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
-                <div>
-                  <strong style={{ fontSize: 12 }}>{source.fileName} — {source.sheetName}</strong>
-                  <p className="muted" style={{ margin: '4px 0 0', fontSize: 11 }}>{source.targetEntity} · {source.rowCount} row(s) · {new Date(source.importedAt).toLocaleString()}</p>
+              <div key={source.batchId} style={{ border: '1px solid #e8ebf1', borderRadius: 10, padding: 14, display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', background: source.status === 'declined' ? '#fffaf5' : '#fff' }}>
+                <div style={{ minWidth: 0 }}>
+                  <strong style={{ fontSize: 13, color: '#2d3748' }}>{source.fileName} — {source.sheetName}</strong>
+                  <p style={{ margin: '4px 0 0', fontSize: 11, color: '#718096' }}>{source.targetEntity} · {source.rowCount} row(s) · {new Date(source.importedAt).toLocaleString()}</p>
                 </div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <span style={{ fontSize: 10, fontWeight: 800, color: source.status === 'active' ? '#2db47a' : '#9aa4b2' }}>{source.status === 'active' ? 'Active' : 'Declined'}</span>
-                  <button className="button button-ghost" onClick={() => toggleDecline(source)}>{source.status === 'active' ? 'Decline' : 'Reactivate'}</button>
-                  <button className="button button-ghost" onClick={() => void removeImport(source)}>Remove</button>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                  <span style={{ fontSize: 10, fontWeight: 600, padding: '4px 8px', borderRadius: 999, background: source.status === 'active' ? '#f2fbf7' : '#fff5f5', color: source.status === 'active' ? '#1e4d36' : '#c53030' }}>
+                    {source.status === 'active' ? 'Active' : 'Declined'}
+                  </span>
+                  <button className="button button-ghost" onClick={() => toggleDecline(source)} style={{ fontSize: 11, fontWeight: 500 }}>{source.status === 'active' ? 'Decline' : 'Reactivate'}</button>
+                  <button className="button button-ghost" onClick={() => void removeImport(source)} style={{ fontSize: 11, fontWeight: 500, color: '#e53e3e' }}>Remove</button>
                 </div>
               </div>
             ))}
@@ -709,8 +810,8 @@ export function GoogleSheetsPage() {
           <div className="modal" role="dialog" aria-labelledby="import-confirm-title">
             <div className="modal-header">
               <div>
-                <h3 id="import-confirm-title" className="modal-title">Confirm import</h3>
-                <p className="modal-subtitle">This will add data to your Ledgerly workspace.</p>
+                <h3 id="import-confirm-title" style={{ margin: 0, fontSize: 16, fontWeight: 600, color: '#2d3748' }}>Confirm import</h3>
+                <p style={{ margin: '6px 0 0', fontSize: 12, color: '#718096' }}>This will add data to your Ledgerly workspace.</p>
               </div>
               <button className="icon-button" onClick={cancelImport} aria-label="Close" disabled={importing}>&times;</button>
             </div>
@@ -724,7 +825,7 @@ export function GoogleSheetsPage() {
             </div>
             <div className="form-actions">
               <button className="button button-secondary" onClick={cancelImport} disabled={importing}>Cancel</button>
-              <button className="button button-primary" onClick={() => void confirmImport()} disabled={importing}>{importing ? 'Importing…' : 'Confirm import'}</button>
+              <button className="button button-primary" onClick={() => void confirmImport()} disabled={importing} style={{ fontWeight: 600 }}>{importing ? 'Importing…' : 'Confirm import'}</button>
             </div>
           </div>
         </div>

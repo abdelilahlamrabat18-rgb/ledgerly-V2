@@ -5,9 +5,10 @@ import { LoadingState } from '../../components/shared/LoadingState';
 import { Modal } from '../../components/shared/Modal';
 import { PageError } from '../../components/shared/PageError';
 import { useEntity } from '../../hooks/useBusinessData';
+import { usePreferences } from '../../context/PreferencesContext';
 import { useToast } from '../../context/ToastContext';
 import type { Client } from '../../types';
-import { initials, today } from '../../lib/utils';
+import { formatDate, initials, today } from '../../lib/utils';
 import { toCSV, downloadCSV } from '../../lib/export';
 
 type ClientForm = { name: string; email: string; phone: string; company: string; address: string; notes: string };
@@ -15,6 +16,7 @@ const emptyForm: ClientForm = { name: '', email: '', phone: '', company: '', add
 
 export function ClientsPage() {
   const { items, loading, error, create, update, remove, refresh } = useEntity<Client>('clients');
+  const { formatDate: formatDateLocale } = usePreferences();
   const { toast } = useToast();
   const [query, setQuery] = useState('');
   const [modal, setModal] = useState<'create' | 'edit' | 'details' | null>(null);
@@ -115,7 +117,7 @@ export function ClientsPage() {
                     <td><div className="table-person"><span className="avatar">{initials(client.name)}</span><div><strong>{client.name}</strong><span>{client.address || 'No address added'}</span></div></div></td>
                     <td><div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>{client.email && <span style={{ display: 'flex', alignItems: 'center', gap: 5 }}><Mail size={11} />{client.email}</span>}{client.phone && <span style={{ display: 'flex', alignItems: 'center', gap: 5 }}><Phone size={11} />{client.phone}</span>}</div></td>
                     <td>{client.company || '—'}</td>
-                    <td>{client.created_at ? new Date(client.created_at).toLocaleDateString() : '—'}</td>
+                    <td>{client.created_at ? formatDateLocale(client.created_at, true) : '—'}</td>
                     <td>
                       <div style={{ display: 'flex', gap: 4 }}>
                         <button className="button button-ghost" onClick={() => { setSelected(client); setModal('details'); }} aria-label="View client"><MoreHorizontal size={14} /></button>
