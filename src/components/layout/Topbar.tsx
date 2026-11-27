@@ -1,6 +1,6 @@
 import { Bell, Globe, Menu, Search, X, ChevronDown } from 'lucide-react';
 import { useLocation } from 'react-router-dom';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useCallback } from 'react';
 import { useAuth } from '../../context/AuthContext';
 import { usePreferences } from '../../context/PreferencesContext';
 import type { SupportedLanguage } from '../../context/PreferencesContext';
@@ -17,20 +17,26 @@ export function Topbar({ onMenu }: { onMenu: () => void }) {
   const currencyDisplayName = new Intl.DisplayNames(language as string, { type: 'currency' }).of(currency) || currency;
 
   const [openDropdown, setOpenDropdown] = useState<'currency' | 'language' | null>(null);
-  const currencyDropdownRef = useRef<HTMLDivElement>(null);
-  const languageDropdownRef = useRef<HTMLDivElement>(null);
+  const currencyWrapperRef = useRef<HTMLDivElement>(null);
+  const languageWrapperRef = useRef<HTMLDivElement>(null);
+
+  const closeDropdown = useCallback(() => setOpenDropdown(null), []);
+
+  const toggleDropdown = useCallback((dropdown: 'currency' | 'language') => {
+    setOpenDropdown(prev => prev === dropdown ? null : dropdown);
+  }, []);
 
   useEffect(() => {
     function handleClickOutside(e: MouseEvent) {
-      if (currencyDropdownRef.current && !currencyDropdownRef.current.contains(e.target as Node)) {
-        setOpenDropdown(prev => prev === 'currency' ? null : prev);
-      }
-      if (languageDropdownRef.current && !languageDropdownRef.current.contains(e.target as Node)) {
-        setOpenDropdown(prev => prev === 'language' ? null : prev);
+      if (openDropdown === null) return;
+      const target = e.target as Node;
+      const wrapperRef = openDropdown === 'currency' ? currencyWrapperRef : languageWrapperRef;
+      if (wrapperRef.current && !wrapperRef.current.contains(target)) {
+        closeDropdown();
       }
     }
     function handleEscape(e: KeyboardEvent) {
-      if (e.key === 'Escape') setOpenDropdown(null);
+      if (e.key === 'Escape') closeDropdown();
     }
     document.addEventListener('mousedown', handleClickOutside);
     document.addEventListener('keydown', handleEscape);
@@ -38,20 +44,16 @@ export function Topbar({ onMenu }: { onMenu: () => void }) {
       document.removeEventListener('mousedown', handleClickOutside);
       document.removeEventListener('keydown', handleEscape);
     };
-  }, []);
-
-  const toggleDropdown = (dropdown: 'currency' | 'language') => {
-    setOpenDropdown(prev => prev === dropdown ? null : dropdown);
-  };
+  }, [openDropdown, closeDropdown]);
 
   const handleCurrencySelect = (code: string) => {
     setCurrency(code);
-    setOpenDropdown(null);
+    closeDropdown();
   };
 
   const handleLanguageSelect = (code: SupportedLanguage) => {
     setLanguage(code);
-    setOpenDropdown(null);
+    closeDropdown();
   };
 
   const filteredCurrencies = supportedCurrencies.filter(code => {
@@ -69,7 +71,7 @@ export function Topbar({ onMenu }: { onMenu: () => void }) {
       <div className="topbar-actions">
         <button className="icon-button" aria-label="Notifications"><Bell size={17} /></button>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <div ref={currencyDropdownRef} style={{ position: 'relative' }}>
+          <div ref={currencyWrapperRef} style={{ position: 'relative' }}>
             <button
               className="icon-button"
               aria-label="Currency"
@@ -149,7 +151,7 @@ export function Topbar({ onMenu }: { onMenu: () => void }) {
               </div>
             )}
           </div>
-          <div ref={languageDropdownRef} style={{ position: 'relative' }}>
+          <div ref={languageWrapperRef} style={{ position: 'relative' }}>
             <button
               className="icon-button"
               aria-label="Language"
