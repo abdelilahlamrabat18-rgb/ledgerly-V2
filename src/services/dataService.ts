@@ -9,9 +9,9 @@ const demoStore: Record<EntityName, unknown[]> = {
 
 export const entityFields: Record<EntityName, string[]> = {
   clients: ['name', 'email', 'phone', 'company', 'address', 'notes'],
-  invoices: ['invoice_number', 'amount', 'status', 'issue_date', 'due_date', 'notes', 'client_id'],
+  invoices: ['invoice_number', 'amount', 'status', 'issue_date', 'due_date', 'notes', 'client_id', 'client_name'],
   expenses: ['description', 'category', 'amount', 'date', 'notes'],
-  orders: ['product', 'quantity', 'total', 'status', 'order_date', 'notes', 'client_id'],
+  orders: ['product', 'quantity', 'total', 'status', 'order_date', 'notes', 'client_id', 'client_name'],
 };
 
 function toDataError(error: unknown) { return new Error(userFacingError(error)); }

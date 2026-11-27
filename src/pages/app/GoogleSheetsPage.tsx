@@ -16,15 +16,17 @@ const ENTITY_OPTIONS: { value: EntityName; label: string; keyFields: string[] }[
   { value: 'orders', label: 'Orders', keyFields: ['product', 'total', 'quantity', 'order_date', 'status'] },
 ];
 
+const ENTITY_IMPORT_ORDER: EntityName[] = ['clients', 'invoices', 'expenses', 'orders'];
+
 const MAX_ROWS = 5000;
 const MAX_BYTES = 10 * 1024 * 1024;
 const ACCEPT = '.csv,.xlsx,.xls,.json';
 
 const TEMPLATE_HEADERS: Record<EntityName, string[]> = {
   clients: ['name', 'email', 'phone', 'company', 'address', 'notes'],
-  invoices: ['invoice_number', 'client_id', 'amount', 'status', 'issue_date', 'due_date', 'notes'],
+  invoices: ['invoice_number', 'client_id', 'client_name', 'amount', 'status', 'issue_date', 'due_date', 'notes'],
   expenses: ['description', 'category', 'amount', 'date', 'notes'],
-  orders: ['product', 'client_id', 'quantity', 'total', 'status', 'order_date', 'notes'],
+  orders: ['product', 'client_id', 'client_name', 'quantity', 'total', 'status', 'order_date', 'notes'],
 };
 
 const TEMPLATE_SAMPLE_ROWS: Record<EntityName, string[][]> = {
@@ -33,16 +35,16 @@ const TEMPLATE_SAMPLE_ROWS: Record<EntityName, string[][]> = {
     ['Globex Inc', 'sales@globex.io', '+1-555-0200', 'Globex', '456 Oak Ave, Shelbyville', 'Net-30 terms'],
   ],
   invoices: [
-    ['INV-1001', '', '2500.00', 'paid', '2024-01-15', '2024-02-14', 'Web design project'],
-    ['INV-1002', '', '1200.50', 'pending', '2024-02-01', '2024-03-03', 'Monthly retainer'],
+    ['INV-1001', '', 'Acme Corporation', '2500.00', 'paid', '2024-01-15', '2024-02-14', 'Web design project'],
+    ['INV-1002', '', 'Globex Inc', '1200.50', 'pending', '2024-02-01', '2024-03-03', 'Monthly retainer'],
   ],
   expenses: [
     ['Adobe Creative Cloud', 'Software', '599.88', '2024-01-10', 'Annual subscription'],
     ['Office Rent', 'Workspace', '2500.00', '2024-02-01', 'February rent'],
   ],
   orders: [
-    ['Website Redesign', '', '1', '5000.00', 'completed', '2024-01-20', 'Phase 1 delivery'],
-    ['SEO Optimization', '', '3', '1500.00', 'processing', '2024-02-15', 'Monthly retainer x3'],
+    ['Website Redesign', '', 'Acme Corporation', '1', '5000.00', 'completed', '2024-01-20', 'Phase 1 delivery'],
+    ['SEO Optimization', '', 'Globex Inc', '3', '1500.00', 'processing', '2024-02-15', 'Monthly retainer x3'],
   ],
 };
 
@@ -142,6 +144,18 @@ function recordDuplicateKey(target: EntityName, record: Record<string, unknown>)
   if (target === 'expenses') return `expense:${String(record.description || '').trim().toLowerCase()}|${String(record.date || '')}|${String(record.amount ?? '')}`;
   return `order:${String(record.product || '').trim().toLowerCase()}|${String(record.order_date || '')}|${String(record.total ?? '')}`;
 }
+
+type SheetState = {
+  headers: string[];
+  rows: string[][];
+  targetEntity: EntityName;
+  mapping: Record<string, string>;
+  included: boolean;
+  hygieneSummary: HygieneSummary | null;
+  mappingCompleteness: { mapped: number; total: number; required: number; requiredTotal: number; isComplete: boolean } | null;
+  duplicateCount: number;
+  structuralWarning: string | null;
+};
 
 type ImportSource = {
   batchId: string;
@@ -489,6 +503,7 @@ export function GoogleSheetsPage() {
   const [workbook, setWorkbook] = useState<XLSX.WorkBook | null>(null);
   const [sheetNames, setSheetNames] = useState<string[]>([]);
   const [selectedSheet, setSelectedSheet] = useState<string | null>(null);
+  const [sheetStates, setSheetStates] = useState<Record<string, SheetState>>({});
 
   const [importTarget, setImportTarget] = useState<EntityName>('clients');
   const [mapping, setMapping] = useState<Record<string, string>>({});
@@ -502,6 +517,7 @@ export function GoogleSheetsPage() {
   const [mappingCompleteness, setMappingCompleteness] = useState<{ mapped: number; total: number; required: number; requiredTotal: number; isComplete: boolean } | null>(null);
   const [hygieneSummary, setHygieneSummary] = useState<HygieneSummary | null>(null);
   const [showHygieneDetails, setShowHygieneDetails] = useState(false);
+  const [structuralWarning, setStructuralWarning] = useState<string | null>(null);
 
   function resetMappingState(nextTarget?: EntityName) {
     setImportTarget(nextTarget ?? 'clients');
@@ -510,9 +526,23 @@ export function GoogleSheetsPage() {
     setImportResult(null);
     setImportError(null);
     setShowImportConfirm(false);
+    setHygieneSummary(null);
+    setStructuralWarning(null);
+    setDuplicateCount(0);
   }
 
-  function applyParsed(parsed: { headers: string[]; rows: string[][] }, sourceLabel: string) {
+  function getSheetState(sheetName: string): SheetState | null {
+    return sheetStates[sheetName] || null;
+  }
+
+  function updateSheetState(sheetName: string, updates: Partial<SheetState>) {
+    setSheetStates(prev => ({
+      ...prev,
+      [sheetName]: { ...prev[sheetName], ...updates } as SheetState
+    }));
+  }
+
+  function applyParsed(parsed: { headers: string[]; rows: string[][] }, sourceLabel: string, sheetName?: string) {
     if (!parsed.headers.length) throw new Error('This file has no header row. Add column headers and try again.');
     if (parsed.rows.length > MAX_ROWS) {
       throw new Error(`This file has more than ${MAX_ROWS.toLocaleString()} data rows. Split it into smaller imports.`);
@@ -523,28 +553,56 @@ export function GoogleSheetsPage() {
     for (const field of entityFields[bestTarget]) {
       if (!nextMapping[field] && saved[field] && parsed.headers.includes(saved[field])) nextMapping[field] = saved[field];
     }
-    setImportTarget(bestTarget);
-    setMapping(nextMapping);
-    setMappingCompleteness(getMappingCompleteness(bestTarget, parsed.headers, nextMapping));
-    setHeaders(parsed.headers);
-    setRows(parsed.rows);
+    const completeness = getMappingCompleteness(bestTarget, parsed.headers, nextMapping);
+    const warning = isSummaryReport(parsed.headers, parsed.rows)
+      ? 'This looks like a summary report rather than a data table. Please upload a flat table sheet (such as Clients, Invoices, Expenses, or Orders) or upload the full .xlsx workbook.'
+      : null;
+
+    if (sheetName) {
+      // Multi-sheet workbook: store state per sheet
+      const newSheetState: SheetState = {
+        headers: parsed.headers,
+        rows: parsed.rows,
+        targetEntity: bestTarget,
+        mapping: nextMapping,
+        included: !warning, // Auto-include if not a summary report
+        hygieneSummary: null,
+        mappingCompleteness: completeness,
+        duplicateCount: 0,
+        structuralWarning: warning,
+      };
+      updateSheetState(sheetName, newSheetState);
+      
+      // If this is the selected sheet, update the live preview
+      if (selectedSheet === sheetName) {
+        setHeaders(parsed.headers);
+        setRows(parsed.rows);
+        setImportTarget(bestTarget);
+        setMapping(nextMapping);
+        setMappingCompleteness(completeness);
+        setStructuralWarning(warning);
+        setHygieneSummary(null);
+        setDuplicateCount(0);
+      }
+    } else {
+      // Single file (CSV, JSON): use legacy state
+      setImportTarget(bestTarget);
+      setMapping(nextMapping);
+      setMappingCompleteness(completeness);
+      setHeaders(parsed.headers);
+      setRows(parsed.rows);
+      setStructuralWarning(warning);
+      setHygieneSummary(null);
+      setDuplicateCount(0);
+    }
     toast(`Loaded ${sourceLabel}. Map columns to import.`, 'success');
   }
 
-  function loadWorkbookSheet(wb: XLSX.WorkBook, sheet: string, format: ImportFileFormat, name: string, resetTarget = true) {
+  function loadWorkbookSheet(wb: XLSX.WorkBook, sheet: string, format: ImportFileFormat, name: string) {
     try {
       const parsed = parseSheet(wb, sheet, format.toUpperCase());
       setSelectedSheet(sheet);
-      if (resetTarget) {
-        const match = ENTITY_OPTIONS.find((o) => o.value === sheet.toLowerCase() || o.label.toLowerCase() === sheet.toLowerCase());
-        resetMappingState(match?.value);
-      } else {
-        setMapping({});
-        setImportResult(null);
-        setImportError(null);
-        setShowImportConfirm(false);
-      }
-      applyParsed(parsed, `${name} (${sheet})`);
+      applyParsed(parsed, `${name} (${sheet})`, sheet);
     } catch (err) {
       setHeaders(null);
       setRows([]);
@@ -553,8 +611,27 @@ export function GoogleSheetsPage() {
     }
   }
 
+  function switchSheet(sheetName: string) {
+    const state = getSheetState(sheetName);
+    if (!state) return;
+    
+    setSelectedSheet(sheetName);
+    setHeaders(state.headers);
+    setRows(state.rows);
+    setImportTarget(state.targetEntity);
+    setMapping(state.mapping);
+    setMappingCompleteness(state.mappingCompleteness);
+    setStructuralWarning(state.structuralWarning);
+    setHygieneSummary(state.hygieneSummary);
+    setDuplicateCount(state.duplicateCount);
+    setImportResult(null);
+    setImportError(null);
+    setShowImportConfirm(false);
+  }
+
   async function handleFile(file: File) {
     resetMappingState();
+    setSheetStates({});
     setFileError(null);
     setHeaders(null);
     setRows([]);
@@ -583,11 +660,62 @@ export function GoogleSheetsPage() {
         if (!wb.SheetNames.length) throw new Error('This workbook has no sheets.');
         setWorkbook(wb);
         setSheetNames(wb.SheetNames);
-        const auto = autoDetectSheet(wb.SheetNames);
-        if (!auto) throw new Error('This workbook has no sheets.');
-        const match = ENTITY_OPTIONS.find((o) => o.value === auto.toLowerCase() || o.label.toLowerCase() === auto.toLowerCase());
-        if (match) setImportTarget(match.value);
-        loadWorkbookSheet(wb, auto, format, file.name, false);
+        
+        // Parse all sheets and initialize their states
+        const initialStates: Record<string, SheetState> = {};
+        for (const sheetName of wb.SheetNames) {
+          try {
+            const parsed = parseSheet(wb, sheetName, format.toUpperCase());
+            const bestTarget = detectBestEntity(parsed.headers);
+            const nextMapping = autoMapHeaders(parsed.headers, bestTarget);
+            const saved = loadSavedMapping(bestTarget);
+            for (const field of entityFields[bestTarget]) {
+              if (!nextMapping[field] && saved[field] && parsed.headers.includes(saved[field])) nextMapping[field] = saved[field];
+            }
+            const completeness = getMappingCompleteness(bestTarget, parsed.headers, nextMapping);
+            const warning = isSummaryReport(parsed.headers, parsed.rows)
+              ? 'This looks like a summary report rather than a data table. Please upload a flat table sheet (such as Clients, Invoices, Expenses, or Orders) or upload the full .xlsx workbook.'
+              : null;
+            
+            initialStates[sheetName] = {
+              headers: parsed.headers,
+              rows: parsed.rows,
+              targetEntity: bestTarget,
+              mapping: nextMapping,
+              included: !warning,
+              hygieneSummary: null,
+              mappingCompleteness: completeness,
+              duplicateCount: 0,
+              structuralWarning: warning,
+            };
+          } catch {
+            // If a sheet fails to parse, mark it as excluded
+            initialStates[sheetName] = {
+              headers: [],
+              rows: [],
+              targetEntity: 'clients',
+              mapping: {},
+              included: false,
+              hygieneSummary: null,
+              mappingCompleteness: null,
+              duplicateCount: 0,
+              structuralWarning: 'Could not read this sheet.',
+            };
+          }
+        }
+        setSheetStates(initialStates);
+        
+        // Auto-select the first non-summary sheet
+        const auto = wb.SheetNames.find(name => {
+          const state = initialStates[name];
+          return state && !state.structuralWarning;
+        }) || wb.SheetNames[0];
+        
+        if (auto) {
+          const match = ENTITY_OPTIONS.find((o) => o.value === auto.toLowerCase() || o.label.toLowerCase() === auto.toLowerCase());
+          if (match) setImportTarget(match.value);
+          loadWorkbookSheet(wb, auto, format, file.name);
+        }
       }
     } catch (err) {
       setFileError(err instanceof Error ? err.message : 'Could not read this file.');
@@ -604,11 +732,6 @@ export function GoogleSheetsPage() {
   }
 
   const previewRows = rows.slice(0, 20);
-  const structuralWarning = useMemo(() => {
-    if (!headers || !headers.length || !rows.length) return null;
-    if (isSummaryReport(headers, rows)) return 'This looks like a summary report rather than a data table. Please upload a flat table sheet (such as Clients, Invoices, Expenses, or Orders) or upload the full .xlsx workbook.';
-    return null;
-  }, [headers, rows]);
   const mappingError = useMemo(() => {
     if (!headers || !headers.length) return null;
     return validateMapping(importTarget, headers, mapping);
@@ -621,6 +744,10 @@ export function GoogleSheetsPage() {
 
   function updateMapping(field: string, header: string) {
     setMapping((prev) => ({ ...prev, [field]: header }));
+    // Also update the sheet state if we're in multi-sheet mode
+    if (selectedSheet && workbook) {
+      updateSheetState(selectedSheet, { mapping: { ...sheetStates[selectedSheet]?.mapping, [field]: header } });
+    }
   }
   function resetMapping() { setMapping({}); setImportResult(null); setImportError(null); }
 
@@ -637,12 +764,154 @@ export function GoogleSheetsPage() {
         const existingKeys = new Set(existing.map((record) => recordDuplicateKey(importTarget, record as Record<string, unknown>)));
         const summary = analyzeHygiene(importTarget, headers, rows, mapping, existingKeys, getVendorCategory);
         setHygieneSummary(summary);
+        // Also update sheet state if in multi-sheet mode
+        if (selectedSheet && workbook) {
+          updateSheetState(selectedSheet, { hygieneSummary: summary });
+        }
         setShowHygieneDetails(false);
       } catch {
         setHygieneSummary(null);
+        if (selectedSheet && workbook) {
+          updateSheetState(selectedSheet, { hygieneSummary: null });
+        }
       }
       setShowImportConfirm(true);
     })();
+  }
+
+  async function confirmImportAll() {
+    if (!workbook || !sheetNames.length) {
+      setImportError('No workbook loaded.');
+      return;
+    }
+
+    // Collect all ready sheets in the correct import order
+    const readySheets: Array<{ sheetName: string; targetEntity: EntityName; state: SheetState }> = [];
+    for (const entityType of ENTITY_IMPORT_ORDER) {
+      for (const sheetName of sheetNames) {
+        const state = sheetStates[sheetName];
+        if (state && state.mappingCompleteness?.isComplete && !state.structuralWarning && state.included && state.targetEntity === entityType) {
+          readySheets.push({ sheetName, targetEntity: entityType, state });
+        }
+      }
+    }
+
+    if (readySheets.length === 0) {
+      setImportError('No sheets are ready to import. Please map all required fields for at least one sheet.');
+      return;
+    }
+
+    setImporting(true);
+    setImportError(null);
+    setImportResult(null);
+
+    try {
+      let totalImported = 0;
+      let totalSkipped = 0;
+      const newImportSources: ImportSource[] = [];
+
+      // Process each ready sheet in order
+      for (const { sheetName, targetEntity, state } of readySheets) {
+        const dataRows = state.rows.filter((row) => row.some((cell) => String(cell || '').trim()));
+        const records = dataRows
+          .map((row) => mapRecord(targetEntity, state.headers, row, state.mapping, user?.id))
+          .filter((record): record is NonNullable<typeof record> => record !== null);
+
+        console.log('[ledgerly][import] confirmImportAll sheet', {
+          sheetName,
+          targetTable: targetEntity,
+          authUserId: user?.id,
+          file: activeLabel,
+          totalDataRows: dataRows.length,
+          mappedRecords: records.length,
+          mapping: state.mapping,
+        });
+
+        let imported = 0;
+        let skipped = Math.max(dataRows.length - records.length, 0);
+        let recordsToImport = records;
+
+        if (skipDuplicates && state.duplicateCount > 0) {
+          try {
+            const existing = await listEntity(targetEntity);
+            const existingKeys = new Set(existing.map((record) => recordDuplicateKey(targetEntity, record as Record<string, unknown>)));
+            recordsToImport = records.filter((record) => !existingKeys.has(recordDuplicateKey(targetEntity, record as Record<string, unknown>)));
+            skipped += records.length - recordsToImport.length;
+          } catch {
+            // If duplicate lookup fails, continue with all mapped records.
+          }
+        }
+
+        saveMapping(targetEntity, state.mapping);
+
+        // Save vendor-category memory for expenses
+        if (targetEntity === 'expenses') {
+          for (const record of recordsToImport) {
+            const expenseRecord = record as Record<string, unknown> & { description?: string; category?: string };
+            const description = expenseRecord.description;
+            const category = expenseRecord.category;
+            if (description && category && category !== 'Other') {
+              setVendorCategory(description, category);
+            }
+          }
+        }
+
+        if (recordsToImport.length) {
+          try {
+            const inserted = await createEntitiesBatch(targetEntity, recordsToImport as Record<string, unknown>[], user?.id);
+            imported = inserted.length || recordsToImport.length;
+            const batchId = `import-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+            const source: ImportSource = {
+              batchId,
+              fileName: fileName || 'File',
+              sheetName,
+              targetEntity,
+              rowCount: recordsToImport.length,
+              importedAt: new Date().toISOString(),
+              status: 'active',
+              recordIds: (inserted as Array<{ id?: string }>).map((record) => String(record.id || '')).filter(Boolean),
+            };
+            newImportSources.push(source);
+          } catch (err) {
+            console.error('[ledgerly][import] batch insert failed', { targetTable: targetEntity, authUserId: user?.id, error: err });
+            setImportError(err instanceof Error ? err.message : `Import failed for ${sheetName}.`);
+            toast(err instanceof Error ? err.message : `Import failed for ${sheetName}.`, 'error');
+            setImporting(false);
+            return;
+          }
+        }
+
+        totalImported += imported;
+        totalSkipped += skipped;
+      }
+
+      // Save all import sources
+      if (newImportSources.length) {
+        const nextSources = [...newImportSources, ...importSources];
+        setImportSources(nextSources);
+        saveImportSources(nextSources);
+      }
+
+      console.log('[ledgerly][import] confirmImportAll finished', { totalImported, totalSkipped, sheets: readySheets.map(s => s.sheetName) });
+      setImportResult({ imported: totalImported, skipped: totalSkipped });
+      
+      if (totalImported > 0) {
+        toast(`Imported ${totalImported} row(s) across ${readySheets.length} sheet(s).`, 'success');
+        window.dispatchEvent(new Event('ledgerly:data-updated'));
+        navigate('/app');
+        setTimeout(() => window.dispatchEvent(new Event('ledgerly:data-updated')), 150);
+        return;
+      }
+      toast('No valid rows were imported. Check your mapping and data.', 'error');
+    } catch (err) {
+      console.error('[ledgerly][import] confirmImportAll fatal error', { authUserId: user?.id, error: err });
+      const message = err instanceof Error ? err.message : 'Import failed.';
+      setImportError(message);
+      toast(message, 'error');
+    } finally {
+      setImporting(false);
+      setShowImportConfirm(false);
+    }
   }
 
   async function confirmImport() {
@@ -777,13 +1046,30 @@ export function GoogleSheetsPage() {
           const record = mapRecord(importTarget, headers, row, mapping, user?.id);
           if (record && keys.has(recordDuplicateKey(importTarget, record as Record<string, unknown>))) count += 1;
         }
-        if (!cancelled) setDuplicateCount(count);
+        if (!cancelled) {
+          setDuplicateCount(count);
+          // Also update sheet state if in multi-sheet mode
+          if (selectedSheet && workbook) {
+            updateSheetState(selectedSheet, { duplicateCount: count });
+          }
+        }
       } catch {
-        if (!cancelled) setDuplicateCount(0);
+        if (!cancelled) {
+          setDuplicateCount(0);
+          if (selectedSheet && workbook) {
+            updateSheetState(selectedSheet, { duplicateCount: 0 });
+          }
+        }
       }
     })();
     return () => { cancelled = true; };
-  }, [headers, rows, importTarget, mapping, user?.id]);
+  }, [headers, rows, importTarget, mapping, user?.id, selectedSheet, workbook]);
+
+  const isMultiSheet = sheetNames.length > 1 && workbook && fileFormat && (fileFormat === 'xlsx' || fileFormat === 'xls');
+  const readySheetsCount = isMultiSheet ? sheetNames.filter(name => {
+    const state = sheetStates[name];
+    return state && state.mappingCompleteness?.isComplete && !state.structuralWarning && state.included;
+  }).length : 0;
 
   const activeLabel = selectedSheet && fileName ? `${fileName} — ${selectedSheet}` : (fileName || 'File');
 
@@ -817,19 +1103,75 @@ export function GoogleSheetsPage() {
         <input ref={fileInputRef} type="file" accept={ACCEPT} style={{ display: 'none' }} onChange={(e) => { const f = e.target.files?.[0]; if (f) void handleFile(f); e.target.value = ''; }} />
         {sheetNames.length > 1 && workbook && fileFormat && (fileFormat === 'xlsx' || fileFormat === 'xls') && (
           <div style={{ marginTop: 14 }}>
-            <p className="muted" style={{ margin: '0 0 8px', fontSize: 12 }}>This workbook has multiple sheets. Select which sheet to import:</p>
-            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-              {sheetNames.map((name) => (
-                <button
-                  key={name}
-                  type="button"
-                  className={`button ${selectedSheet === name ? 'button-primary' : 'button-secondary'}`}
-                  onClick={() => { if (fileName) loadWorkbookSheet(workbook, name, fileFormat, fileName); }}
-                  disabled={fileLoading}
-                >
-                  {name}
-                </button>
-              ))}
+            <h4 style={{ margin: '0 0 10px', fontSize: 12, fontWeight: 600, color: '#2d3748' }}>Workbook sheets</h4>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+              {sheetNames.map((name) => {
+                const state = sheetStates[name];
+                const isReady = state && state.mappingCompleteness?.isComplete && !state.structuralWarning && state.included;
+                const rowCount = state?.rows?.length || 0;
+                return (
+                  <div
+                    key={name}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 8,
+                      padding: '8px 10px',
+                      border: selectedSheet === name ? '2px solid #2db47a' : '1px solid #e8ebf1',
+                      borderRadius: 8,
+                      background: selectedSheet === name ? '#f2fbf7' : '#fff',
+                      transition: 'all 0.15s',
+                      minWidth: 0,
+                    }}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={state?.included !== false}
+                      onChange={(e) => {
+                        if (state) updateSheetState(name, { included: e.target.checked });
+                      }}
+                      disabled={fileLoading || !state?.headers?.length}
+                      style={{ accentColor: '#2db47a', width: 16, height: 16, flexShrink: 0 }}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => switchSheet(name)}
+                      disabled={fileLoading}
+                      style={{
+                        flex: 1,
+                        minWidth: 0,
+                        textAlign: 'left',
+                        background: 'none',
+                        border: 'none',
+                        padding: 0,
+                        fontSize: 11,
+                        fontWeight: selectedSheet === name ? 600 : 400,
+                        color: selectedSheet === name ? '#1e4d36' : '#3d4852',
+                        cursor: fileLoading ? 'not-allowed' : 'pointer',
+                        whiteSpace: 'nowrap',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                      }}
+                    >
+                      {name}
+                    </button>
+                    <span style={{ fontSize: 10, color: '#9aa4b2', whiteSpace: 'nowrap' }}>{rowCount} row{rowCount !== 1 ? 's' : ''}</span>
+                    {state?.structuralWarning && (
+                      <span style={{ fontSize: 9, color: '#f59e0b', background: '#fffbf0', padding: '2px 6px', borderRadius: 4 }}>Summary</span>
+                    )}
+                    {state?.headers?.length && !state?.structuralWarning && (
+                      <span style={{ fontSize: 9, fontWeight: 600, padding: '2px 6px', borderRadius: 4, background: state.targetEntity ? '#eef7f1' : '#f0edff', color: state.targetEntity ? '#1e4d36' : '#5b3bd6' }}>
+                        {state.targetEntity ? ENTITY_OPTIONS.find(o => o.value === state.targetEntity)?.label || state.targetEntity : '—'}
+                      </span>
+                    )}
+                    {state?.headers?.length && !state?.structuralWarning && (
+                      <span style={{ fontSize: 9, fontWeight: 600, padding: '2px 6px', borderRadius: 4, background: isReady ? '#f2fbf7' : '#fff5f5', color: isReady ? '#1e4d36' : '#c53030' }}>
+                        {isReady ? 'Ready' : 'Needs mapping'}
+                      </span>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           </div>
         )}
@@ -894,29 +1236,42 @@ export function GoogleSheetsPage() {
               <div style={{ marginTop: 18 }}>
                 <h3 style={{ margin: '0 0 10px', fontSize: 14, fontWeight: 600, color: '#2d3748' }}>Map columns to Ledgerly fields</h3>
                 <p style={{ margin: '0 0 14px', fontSize: 12, color: '#718096' }}>Review the suggested matches and adjust as needed. Required fields are marked.</p>
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))', gap: 12 }}>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 12 }}>
                   {ENTITY_OPTIONS.map((option) => {
                     const completeness = importTarget === option.value ? mappingComplete : getMappingCompleteness(option.value, headers || [], mapping);
                     const isActive = importTarget === option.value;
-                    return (
-                      <div
-                        key={option.value}
-                        style={{
-                          border: isActive ? '2px solid #2db47a' : '1px solid #e8ebf1',
-                          borderRadius: 10,
-                          padding: '12px 14px',
-                          background: isActive ? '#f2fbf7' : '#fff',
-                          transition: 'border-color 0.15s, box-shadow 0.15s, background 0.15s',
-                          boxShadow: isActive ? '0 0 0 3px rgba(45, 180, 122, 0.1)' : 'none',
-                        }}
-                      >
+return (
+                        <div
+                          key={option.value}
+                          style={{
+                            border: isActive ? '2px solid #2db47a' : '1px solid #e8ebf1',
+                            borderRadius: 10,
+                            padding: '12px 14px',
+                            background: isActive ? '#f2fbf7' : '#fff',
+                            transition: 'border-color 0.15s, box-shadow 0.15s, background 0.15s',
+                            boxShadow: isActive ? '0 0 0 3px rgba(45, 180, 122, 0.1)' : 'none',
+                            minWidth: 0,
+                          }}
+                        >
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
                           <label style={{ fontSize: 12, fontWeight: 600, color: isActive ? '#1e4d36' : '#3d4852' }}>{option.label}</label>
                           <input
                             type="radio"
                             name="import-target"
                             checked={isActive}
-                            onChange={() => { setImportTarget(option.value); setMapping({}); setImportResult(null); setImportError(null); }}
+                            onChange={() => { 
+                              setImportTarget(option.value); 
+                              setMapping({}); 
+                              setImportResult(null); 
+                              setImportError(null);
+                              // Update sheet state
+                              if (selectedSheet && workbook) {
+                                updateSheetState(selectedSheet, { 
+                                  targetEntity: option.value, 
+                                  mapping: {} 
+                                });
+                              }
+                            }}
                             style={{ accentColor: '#2db47a' }}
                           />
                         </div>
@@ -932,7 +1287,7 @@ export function GoogleSheetsPage() {
                               </span>
                               <select
                                 className="form-select"
-                                style={{ padding: '7px 10px', fontSize: 11, minWidth: 140, flex: 1 }}
+                                style={{ padding: '7px 10px', fontSize: 11, minWidth: 140, flex: 1, textOverflow: 'ellipsis', whiteSpace: 'nowrap', overflow: 'hidden' }}
                                 value={mapping[field] || ''}
                                 onChange={(e) => updateMapping(field, e.target.value)}
                                 disabled={importTarget !== option.value}
@@ -959,7 +1314,13 @@ export function GoogleSheetsPage() {
                   })}
                 </div>
                 <div style={{ marginTop: 16, display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-                  <button className="button button-primary" onClick={startImport} disabled={importing || !!structuralWarning || !mappingComplete?.isComplete} style={{ fontWeight: 600 }}>Import Data</button>
+                  {isMultiSheet && readySheetsCount > 0 ? (
+                    <button className="button button-primary" onClick={confirmImportAll} disabled={importing || readySheetsCount === 0} style={{ fontWeight: 600 }}>
+                      Import All Ready Sheets ({readySheetsCount})
+                    </button>
+                  ) : (
+                    <button className="button button-primary" onClick={startImport} disabled={importing || !!structuralWarning || !mappingComplete?.isComplete} style={{ fontWeight: 600 }}>Import Data</button>
+                  )}
                   <button className="button button-ghost" onClick={resetMapping}>Reset mapping</button>
                   {mappingError && <span style={{ fontSize: 11, color: '#e53e3e', background: '#fff5f5', padding: '4px 8px', borderRadius: 6 }}>{mappingError}</span>}
                   {headers && rows.length > 0 && (
