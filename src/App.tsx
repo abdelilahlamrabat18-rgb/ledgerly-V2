@@ -1,9 +1,10 @@
-import { lazy, Suspense, type ReactNode, useEffect } from 'react';
+import { lazy, Suspense, type ReactNode, useEffect, useState } from 'react';
 import { Navigate, Outlet, Route, Routes, useLocation } from 'react-router-dom';
 import { AppShell } from './components/layout/AppShell';
 import { useAuth } from './context/AuthContext';
 import { useBilling } from './context/BillingContext';
 import { PreferencesProvider, usePreferences } from './context/PreferencesContext';
+import { TrialExpiredPrompt } from './components/TrialExpiredPrompt';
 
 const LandingPage = lazy(() => import('./pages/LandingPage').then((module) => ({ default: module.LandingPage })));
 const PrivacyPage = lazy(() => import('./pages/PrivacyPage').then((module) => ({ default: module.PrivacyPage })));
@@ -42,10 +43,25 @@ function ProtectedRoute() {
 
 function CoreRoute() {
   const { user, loading, isDemo } = useAuth();
-  const { loading: billingLoading, hasCoreAccess } = useBilling();
+  const { loading: billingLoading, hasCoreAccess, trialEnd, trialDaysRemaining } = useBilling();
   const location = useLocation();
+  const [showTrialExpired, setShowTrialExpired] = useState(false);
+
+  const isTrialExpired = trialEnd !== null && trialDaysRemaining === 0;
+
   if (loading || billingLoading) return <RouteLoading />;
   if (!user && !isDemo) return <Navigate to="/login" state={{ from: location.pathname }} replace />;
+
+  // If trial expired and not on billing page, show the upgrade prompt
+  if (isTrialExpired && !isDemo && location.pathname !== '/app/billing') {
+    return (
+      <AppShell>
+        <TrialExpiredPrompt onDismiss={() => setShowTrialExpired(true)} />
+        <Outlet />
+      </AppShell>
+    );
+  }
+
   if (!hasCoreAccess && !isDemo) return <Navigate to="/app/billing" state={{ from: location.pathname }} replace />;
   return <AppShell><Outlet /></AppShell>;
 }

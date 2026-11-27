@@ -18,6 +18,7 @@ import {
   normalizeProviderApiKeyPresent,
   type Entitlement,
   type BillingState,
+  type BillingTrial,
 } from '../lib/billing';
 
 interface BillingContextValue {
@@ -29,6 +30,8 @@ interface BillingContextValue {
   hasCoreAccess: boolean;
   isPaid: boolean;
   providerConfigured: boolean;
+  trialEnd: string | null;
+  trialDaysRemaining: number | null;
   refresh: () => Promise<void>;
   startTrial: () => Promise<void>;
 }
@@ -36,6 +39,15 @@ interface BillingContextValue {
 const BillingContext = createContext<BillingContextValue | null>(null);
 
 const DEFAULT_ENTITLEMENT: Entitlement = 'no_provider';
+
+function calculateDaysRemaining(trialEnd: string | null): number | null {
+  if (!trialEnd) return null;
+  const end = new Date(trialEnd).getTime();
+  const now = Date.now();
+  const diff = end - now;
+  if (diff <= 0) return 0;
+  return Math.ceil(diff / (1000 * 60 * 60 * 24));
+}
 
 export function BillingProvider({ children }: { children: ReactNode }) {
   const { user, loading: authLoading, isDemo } = useAuth();
@@ -115,6 +127,10 @@ export function BillingProvider({ children }: { children: ReactNode }) {
     };
   }, [refresh]);
 
+  const trial = state?.trial ?? null;
+  const trialEnd = trial?.trialEnd ?? null;
+  const trialDaysRemaining = calculateDaysRemaining(trialEnd);
+
   const value = useMemo<BillingContextValue>(() => ({
     state,
     entitlement,
@@ -124,9 +140,11 @@ export function BillingProvider({ children }: { children: ReactNode }) {
     hasCoreAccess: hasCoreAccess(entitlement),
     isPaid: isPaid(entitlement),
     providerConfigured,
+    trialEnd,
+    trialDaysRemaining,
     refresh,
     startTrial,
-  }), [state, entitlement, loading, error, providerConfigured, refresh, startTrial]);
+  }), [state, entitlement, loading, error, providerConfigured, trialEnd, trialDaysRemaining, refresh, startTrial]);
 
   return <BillingContext.Provider value={value}>{children}</BillingContext.Provider>;
 }
