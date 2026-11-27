@@ -1,4 +1,4 @@
-import { ArrowRight, Check, FileSpreadsheet, Layers3, ShieldCheck, Sparkles } from 'lucide-react';
+import { ArrowRight, Check, FileSpreadsheet, Layers3, ShieldCheck, Sparkles, Download, Shield, CreditCard } from 'lucide-react';
 import { Link } from 'react-router-dom';
 
 export function LandingPage() {
@@ -6,8 +6,27 @@ export function LandingPage() {
     <section className="hero"><div><div className="hero-kicker">The calm behind your business</div><h1>Turn your spreadsheets into <span>clarity.</span></h1><p className="hero-copy">Ledgerly gives small businesses a simple, organized view of clients, invoices, expenses, and orders — without asking you to change how you work.</p><div className="hero-actions"><Link className="button button-primary" to="/signup">Start for free <ArrowRight size={14} /></Link><a className="button button-secondary" href="#how-it-works">See how it works</a></div><p className="trust-note"><Check size={12} style={{ verticalAlign: '-2px', marginRight: 4, color: '#2db47a' }} /> Your data stays yours. No credit card required.</p></div><div className="hero-visual"><div className="visual-window"><div className="visual-bar"><i /><i /><i /></div><div className="visual-content"><div className="visual-side"><b /><i /><i /><i /><i /></div><div className="visual-main"><h4>Your business overview <span style={{ color: '#f59b64' }}>✦</span></h4><div className="visual-metrics"><div className="visual-metric"><small /><b /></div><div className="visual-metric"><small /><b /></div><div className="visual-metric"><small /><b /></div></div><div className="visual-chart"><i /><i /><i /><i /><i /><i /><i /></div></div></div></div><div className="floating-note"><span className="floating-check"><Check size={14} /></span><span>Sheet synced just now</span></div></div></section>
     <section id="features" className="marketing-section"><div className="section-heading"><div className="hero-kicker" style={{ justifyContent: 'center' }}>Everything in one view</div><h2>Less spreadsheet wrangling. More running your business.</h2><p>Bring the work you already do into a workspace that makes the important things easy to find.</p></div><div className="features-grid"><Feature icon={FileSpreadsheet} title="Connect what you have" text="Connect a Google Sheet in a few clicks. Ledgerly works with your existing data instead of making you start over." /><Feature icon={Layers3} title="See the whole picture" text="Clients, invoices, expenses, and orders live together, so you can make decisions with the full context." /><Feature icon={ShieldCheck} title="Built to stay private" text="Your workspace is isolated to your account with database-level protections, secure sessions, and no exposed credentials." /></div></section>
     <section id="how-it-works" className="how-section"><div className="how-inner"><div className="section-heading"><div className="hero-kicker" style={{ justifyContent: 'center' }}>A clear path forward</div><h2>Up and running in minutes.</h2><p>Ledgerly is designed to feel familiar from the first click.</p></div><div className="steps"><Step n="01" title="Connect your sheet" text="Authorize Google Sheets and choose the spreadsheet you already use to run your business." /><Step n="02" title="Map your columns" text="Tell Ledgerly which columns are names, amounts, dates, and statuses. No rigid template required." /><Step n="03" title="Get back to work" text="Your dashboard stays current while you spend your time on clients, projects, and growth." /></div></div></section>
+    <section className="trust-signals" style={{ padding: '60px 20px', background: '#fafbfc', borderTop: '1px solid #e8ebf1', borderBottom: '1px solid #e8ebf1' }}>
+      <div style={{ maxWidth: 1000, margin: '0 auto', display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 32, textAlign: 'center' }}>
+        <div>
+          <div style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 48, height: 48, borderRadius: 12, background: '#eef7f1', color: '#2db47a', marginBottom: 12 }}><Download size={22} /></div>
+          <h3 style={{ fontSize: 16, fontWeight: 600, color: '#1a202c', marginBottom: 6 }}>Export your data anytime</h3>
+          <p style={{ fontSize: 13, color: '#718096' }}>CSV exports for invoices, expenses, clients, and orders. Your data is never locked in.</p>
+        </div>
+        <div>
+          <div style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 48, height: 48, borderRadius: 12, background: '#fff5f5', color: '#c53030', marginBottom: 12 }}><Shield size={22} /></div>
+          <h3 style={{ fontSize: 16, fontWeight: 600, color: '#1a202c', marginBottom: 6 }}>14-day refund policy</h3>
+          <p style={{ fontSize: 13, color: '#718096' }}>Not satisfied? Get a full refund within 14 days. No questions asked.</p>
+        </div>
+        <div>
+          <div style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 48, height: 48, borderRadius: 12, background: '#fef3e2', color: '#f59b64', marginBottom: 12 }}><CreditCard size={22} /></div>
+          <h3 style={{ fontSize: 16, fontWeight: 600, color: '#1a202c', marginBottom: 6 }}>Transparent billing</h3>
+          <p style={{ fontSize: 13, color: '#718096' }}>Simple pricing at $24/month or $240/year. Cancel anytime, keep your exports.</p>
+        </div>
+      </div>
+    </section>
     <section className="marketing-cta"><Sparkles size={22} color="#f59b64" style={{ marginBottom: 12 }} /><h2>Make space for the work that matters.</h2><p>Start with a clearer view of your business today.</p><Link className="button button-primary" to="/signup">Create your workspace <ArrowRight size={14} /></Link></section>
-  </main><footer className="marketing-footer"><span>© 2025 Ledgerly</span><span>Simple tools for small businesses.</span><Link to="/privacy">Privacy Policy</Link><Link to="/terms">Terms</Link></footer></div>;
+  </main><footer className="marketing-footer" style={{ paddingTop: 24, paddingBottom: 24 }}><span>© 2025 Ledgerly</span><span>Simple tools for small businesses.</span><Link to="/privacy">Privacy Policy</Link><Link to="/terms">Terms</Link><Link to="/refund-policy">Refund Policy</Link></footer></div>;
 }
 function Feature({ icon: Icon, title, text }: { icon: typeof FileSpreadsheet; title: string; text: string }) { return <article className="feature-card"><div className="feature-icon"><Icon size={17} /></div><h3>{title}</h3><p>{text}</p></article>; }
 function Step({ n, title, text }: { n: string; title: string; text: string }) { return <article className="step"><div className="step-number">{n}</div><div><h3>{title}</h3><p>{text}</p></div></article>; }

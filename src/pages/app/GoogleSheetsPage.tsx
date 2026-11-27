@@ -5,6 +5,7 @@ import { useToast } from '../../context/ToastContext';
 import { useAuth } from '../../context/AuthContext';
 import { usePreferences } from '../../context/PreferencesContext';
 import { createEntitiesBatch, deleteEntity, entityFields, listEntity } from '../../services/dataService';
+import { toCSV, downloadCSV } from '../../lib/export';
 import type { EntityName, ImportFileFormat } from '../../types';
 
 const ENTITY_OPTIONS: { value: EntityName; label: string; keyFields: string[] }[] = [
@@ -17,6 +18,46 @@ const ENTITY_OPTIONS: { value: EntityName; label: string; keyFields: string[] }[
 const MAX_ROWS = 5000;
 const MAX_BYTES = 10 * 1024 * 1024;
 const ACCEPT = '.csv,.xlsx,.xls,.json';
+
+const TEMPLATE_HEADERS: Record<EntityName, string[]> = {
+  clients: ['name', 'email', 'phone', 'company', 'address', 'notes'],
+  invoices: ['invoice_number', 'client_id', 'amount', 'status', 'issue_date', 'due_date', 'notes'],
+  expenses: ['description', 'category', 'amount', 'date', 'notes'],
+  orders: ['product', 'client_id', 'quantity', 'total', 'status', 'order_date', 'notes'],
+};
+
+const TEMPLATE_SAMPLE_ROWS: Record<EntityName, string[][]> = {
+  clients: [
+    ['Acme Corporation', 'contact@acme.com', '+1-555-0100', 'Acme Corp', '123 Main St, Springfield', 'Primary contact: Jane Doe'],
+    ['Globex Inc', 'sales@globex.io', '+1-555-0200', 'Globex', '456 Oak Ave, Shelbyville', 'Net-30 terms'],
+  ],
+  invoices: [
+    ['INV-1001', '', '2500.00', 'paid', '2024-01-15', '2024-02-14', 'Web design project'],
+    ['INV-1002', '', '1200.50', 'pending', '2024-02-01', '2024-03-03', 'Monthly retainer'],
+  ],
+  expenses: [
+    ['Adobe Creative Cloud', 'Software', '599.88', '2024-01-10', 'Annual subscription'],
+    ['Office Rent', 'Workspace', '2500.00', '2024-02-01', 'February rent'],
+  ],
+  orders: [
+    ['Website Redesign', '', '1', '5000.00', 'completed', '2024-01-20', 'Phase 1 delivery'],
+    ['SEO Optimization', '', '3', '1500.00', 'processing', '2024-02-15', 'Monthly retainer x3'],
+  ],
+};
+
+function downloadTemplate(entity: EntityName) {
+  const headers = TEMPLATE_HEADERS[entity];
+  const sampleRows = TEMPLATE_SAMPLE_ROWS[entity];
+  const csvContent = toCSV(
+    [headers, ...sampleRows].map((row) => {
+      const obj: Record<string, string> = {};
+      headers.forEach((h, i) => { obj[h] = row[i] ?? ''; });
+      return obj;
+    }),
+    headers.map((h) => ({ key: h, label: h.replace(/_/g, ' ') }))
+  );
+  downloadCSV(csvContent, `${entity}-template.csv`);
+}
 
 function detectFormat(file: File): ImportFileFormat | null {
   const name = file.name.toLowerCase();
@@ -531,7 +572,7 @@ export function GoogleSheetsPage() {
       if (imported > 0) {
         toast(`Imported ${imported} row(s).`, 'success');
         window.dispatchEvent(new Event('ledgerly:data-updated'));
-        navigate('/app/dashboard');
+        navigate('/app');
         setTimeout(() => window.dispatchEvent(new Event('ledgerly:data-updated')), 150);
         return;
       }
@@ -641,6 +682,24 @@ export function GoogleSheetsPage() {
         )}
         {fileError && <div className="notice" style={{ marginTop: 12, borderColor: '#e95f67' }}>{fileError}</div>}
         {structuralWarning && <div className="notice" style={{ marginTop: 12, borderColor: '#f59e0b' }}>{structuralWarning}</div>}
+      </section>
+
+      <section className="card" style={{ padding: 20, marginBottom: 18 }}>
+        <h3 style={{ margin: '0 0 4px', fontSize: 14, fontWeight: 600, color: '#2d3748' }}>Starter templates</h3>
+        <p style={{ margin: '0 0 14px', fontSize: 12, color: '#718096' }}>Download a ready-to-use CSV template with headers and sample data for each entity type.</p>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          {ENTITY_OPTIONS.map((option) => (
+            <button
+              key={option.value}
+              type="button"
+              className="button button-secondary"
+              onClick={() => downloadTemplate(option.value)}
+              style={{ fontSize: 12 }}
+            >
+              Download {option.label} template
+            </button>
+          ))}
+        </div>
       </section>
 
       {(fileLoading || (headers && headers.length > 0)) && (

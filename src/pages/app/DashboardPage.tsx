@@ -1,7 +1,8 @@
-import { ArrowUpRight, BriefcaseBusiness, DollarSign, FileText, Package, Receipt, TrendingUp, Wallet } from 'lucide-react';
+import { ArrowUpRight, BriefcaseBusiness, DollarSign, FileText, Package, Receipt, TrendingUp, Wallet, ChevronUp, ChevronDown } from 'lucide-react';
 import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import { format } from 'date-fns';
 import { Link } from 'react-router-dom';
+import { useMemo } from 'react';
 import { MetricCard } from '../../components/shared/MetricCard';
 import { LoadingState } from '../../components/shared/LoadingState';
 import { PageError } from '../../components/shared/PageError';
@@ -10,8 +11,8 @@ import { useAuth } from '../../context/AuthContext';
 import { usePreferences } from '../../context/PreferencesContext';
 import { useEntity } from '../../hooks/useBusinessData';
 import type { Client, Expense, Invoice, Order } from '../../types';
-import { formatDate } from '../../lib/utils';
-import { buildCashFlow, hasCashFlowData } from '../../lib/analytics';
+import { formatDate, parseISO, subDays, startOfDay, endOfDay, startOfMonth, endOfMonth, today } from '../../lib/utils';
+import { buildCashFlow, hasCashFlowData, parseRecordDate } from '../../lib/analytics';
 
 export function DashboardPage() {
   const { displayName, isDemo } = useAuth();
@@ -22,14 +23,49 @@ export function DashboardPage() {
   const orders = useEntity<Order>('orders');
   const loading = clients.loading || invoices.loading || expenses.loading || orders.loading;
   const error = clients.error || invoices.error || expenses.error || orders.error;
+
+  // Period-over-period comparison (last 30 days vs prior 30 days)
+  const { revenue, expenseTotal, revenueDelta, expenseDelta } = useMemo(() => {
+    const now = new Date();
+    const currentEnd = endOfDay(now);
+    const currentStart = startOfDay(subDays(now, 30));
+    const previousEnd = new Date(currentStart.getTime() - 1);
+    const previousStart = startOfDay(subDays(previousEnd, 30));
+
+    const currentPaidInvoices = invoices.items.filter((inv) => {
+      const d = parseRecordDate(inv.issue_date);
+      return d && d >= currentStart && d <= currentEnd && inv.status === 'paid';
+    });
+    const previousPaidInvoices = invoices.items.filter((inv) => {
+      const d = parseRecordDate(inv.issue_date);
+      return d && d >= previousStart && d <= previousEnd && inv.status === 'paid';
+    });
+    const currentExpenses = expenses.items.filter((exp) => {
+      const d = parseRecordDate(exp.date);
+      return d && d >= currentStart && d <= currentEnd;
+    });
+    const previousExpenses = expenses.items.filter((exp) => {
+      const d = parseRecordDate(exp.date);
+      return d && d >= previousStart && d <= previousEnd;
+    });
+
+    const currentRevenue = currentPaidInvoices.reduce((sum, inv) => sum + Number(inv.amount || 0), 0);
+    const currentExpense = currentExpenses.reduce((sum, exp) => sum + Number(exp.amount || 0), 0);
+    const prevRevenue = previousPaidInvoices.reduce((sum, inv) => sum + Number(inv.amount || 0), 0);
+    const prevExpense = previousExpenses.reduce((sum, exp) => sum + Number(exp.amount || 0), 0);
+
+    const revenueDelta = prevRevenue > 0 ? ((currentRevenue - prevRevenue) / prevRevenue) * 100 : 0;
+    const expenseDelta = prevExpense > 0 ? ((currentExpense - prevExpense) / prevExpense) * 100 : 0;
+
+    return { revenue: currentRevenue, expenseTotal: currentExpense, revenueDelta, expenseDelta };
+  }, [invoices.items, expenses.items]);
+
   const paidInvoices = invoices.items.filter((invoice) => invoice.status === 'paid');
-  const revenue = paidInvoices.reduce((sum, invoice) => sum + Number(invoice.amount || 0), 0);
   const openInvoices = invoices.items.filter((invoice) => ['pending', 'overdue'].includes(invoice.status));
   const outstanding = openInvoices.reduce((sum, invoice) => sum + Number(invoice.amount || 0), 0);
-  const expenseTotal = expenses.items.reduce((sum, expense) => sum + Number(expense.amount || 0), 0);
   const netCashflow = revenue - expenseTotal;
   const monthlyExpenseAvg = expenseTotal / 12 || 0;
-  const runwayMonths = monthlyExpenseAvg > 0 ? Math.max(0, (revenue / monthlyExpenseAvg)).toFixed(1) : '\u221e';
+  const runwayMonths = monthlyExpenseAvg > 0 ? Math.max(0, (revenue / monthlyExpenseAvg)).toFixed(1) : '∞';
   const recentInvoices = invoices.items.slice(0, 4);
   const chartData = buildCashFlow(invoices.items, expenses.items);
   const hasChartData = hasCashFlowData(chartData);
@@ -44,22 +80,34 @@ export function DashboardPage() {
     ...orders.items.map((order) => ({ id: `order-${order.id}`, kind: 'order' as const, title: `Order ${order.status}`, detail: order.product, createdAt: order.created_at })),
   ].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()).slice(0, 4);
 
+  const formatDelta = (delta: number) => {
+    const sign = delta >= 0 ? '+' : '';
+    return `${sign}${delta.toFixed(1)}%`;
+  };
+
+  const DeltaIndicator = ({ delta }: { delta: number }) => (
+    <span style={{ fontSize: 11, fontWeight: 600, color: delta >= 0 ? '#2db47a' : '#c53030', marginLeft: 8 }}>
+      {delta >= 0 ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+      {formatDelta(delta)}
+    </span>
+  );
+
   if (loading) return <main className="page-wrap"><LoadingState /></main>;
   return <main className="page-wrap">
-    <div className="page-heading"><div><p className="eyebrow">Overview \u00b7 {todayLabel}</p><h1 className="page-title">{greetingTitle}</h1><p className="page-subtitle">Here\u2019s what\u2019s happening across your business today.</p></div><Link className="button button-primary" to="/app/google-sheets"><ArrowUpRight size={15} /> Sync your sheet</Link></div>
+    <div className="page-heading"><div><p className="eyebrow">Overview · {todayLabel}</p><h1 className="page-title">{greetingTitle}</h1><p className="page-subtitle">Here's what's happening across your business today.</p></div><Link className="button button-primary" to="/app/google-sheets"><ArrowUpRight size={15} /> Sync your sheet</Link></div>
     {error && <PageError message={error} onRetry={() => { void clients.refresh(); void invoices.refresh(); void expenses.refresh(); void orders.refresh(); }} />}
     <div className="stats-grid">
       <MetricCard label="Total clients" value={String(clients.items.length)} detail={`${clients.items.length} ${clients.items.length === 1 ? 'client' : 'clients'} in your workspace`} icon={BriefcaseBusiness} tone="purple" />
-      <MetricCard label="Paid revenue" value={formatCurrency(revenue)} detail={`${paidInvoices.length} paid ${paidInvoices.length === 1 ? 'invoice' : 'invoices'} recorded`} icon={DollarSign} tone="green" />
+      <MetricCard label="Paid revenue (30d)" value={formatCurrency(revenue)} detail={`${paidInvoices.length} paid ${paidInvoices.length === 1 ? 'invoice' : 'invoices'} recorded`} icon={DollarSign} tone="green" trailing={<DeltaIndicator delta={revenueDelta} />} />
       <MetricCard label="Outstanding" value={formatCurrency(outstanding)} detail={`${openInvoices.length} ${openInvoices.length === 1 ? 'invoice' : 'invoices'} to follow up`} icon={FileText} tone="orange" />
-      <MetricCard label="Total expenses" value={formatCurrency(expenseTotal)} detail={`${expenses.items.length} tracked ${expenses.items.length === 1 ? 'expense' : 'expenses'}`} icon={Receipt} tone="blue" />
+      <MetricCard label="Total expenses (30d)" value={formatCurrency(expenseTotal)} detail={`${expenses.items.length} tracked ${expenses.items.length === 1 ? 'expense' : 'expenses'}`} icon={Receipt} tone="blue" trailing={<DeltaIndicator delta={expenseDelta} />} />
     </div>
     <div className="stats-grid" style={{ marginTop: 12 }}>
       <MetricCard label="Net cashflow" value={formatCurrency(netCashflow)} detail="Revenue minus expenses (12 months)" icon={TrendingUp} tone={netCashflow >= 0 ? 'green' : 'orange'} />
-      <MetricCard label="Runway" value={runwayMonths === '\u221e' ? '\u221e' : `${runwayMonths} months`} detail={monthlyExpenseAvg > 0 ? `At ${formatCurrency(monthlyExpenseAvg)}/month avg expense rate` : 'No expense data'} icon={Wallet} tone="purple" />
+      <MetricCard label="Runway" value={runwayMonths === '∞' ? '∞' : `${runwayMonths} months`} detail={monthlyExpenseAvg > 0 ? `At ${formatCurrency(monthlyExpenseAvg)}/month avg expense rate` : 'No expense data'} icon={Wallet} tone="purple" />
     </div>
     <div className="dashboard-grid">
-      <section className="card"><div className="card-header"><div><h2 className="card-title">Cash flow</h2><p className="page-subtitle" style={{ marginTop: 4, fontSize: 10 }}>Paid invoices and recorded expenses \u00b7 last 6 months</p></div><Link className="card-link" to="/app/analytics">View analytics</Link></div>
+      <section className="card"><div className="card-header"><div><h2 className="card-title">Cash flow</h2><p className="page-subtitle" style={{ marginTop: 4, fontSize: 10 }}>Paid invoices and recorded expenses · last 6 months</p></div><Link className="card-link" to="/app/analytics">View analytics</Link></div>
         {hasChartData ? <div className="chart-wrap"><ResponsiveContainer width="100%" height="100%"><AreaChart data={chartData} margin={{ top: 5, right: 17, left: -15, bottom: 0 }}><defs><linearGradient id="incomeFill" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor="#8d7cf1" stopOpacity={.2} /><stop offset="95%" stopColor="#8d7cf1" stopOpacity={0} /></linearGradient><linearGradient id="expenseFill" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor="#f59b64" stopOpacity={.16} /><stop offset="95%" stopColor="#f59b64" stopOpacity={0} /></linearGradient></defs><CartesianGrid vertical={false} /><XAxis dataKey="month" tickLine={false} axisLine={false} /><YAxis tickLine={false} axisLine={false} tickFormatter={(value) => value >= 1000 ? `$${Math.round(value / 100) / 10}k` : `$${value}`} /><Tooltip formatter={(value) => formatCurrency(Number(value))} contentStyle={{ border: '1px solid #e8ebf1', borderRadius: 8, fontSize: 11 }} /><Area type="monotone" dataKey="income" name="Paid revenue" stroke="#725cea" fill="url(#incomeFill)" strokeWidth={2} /><Area type="monotone" dataKey="expenses" name="Expenses" stroke="#f59b64" fill="url(#expenseFill)" strokeWidth={2} /></AreaChart></ResponsiveContainer></div> : <ChartEmptyState />}
       </section>
       <section className="card"><div className="card-header"><h2 className="card-title">Recent invoices</h2><Link className="card-link" to="/app/invoices">View all</Link></div><div className="recent-list">{recentInvoices.length ? recentInvoices.map((invoice) => <div className="recent-row" key={invoice.id}><div className="recent-icon"><FileText size={14} /></div><div className="recent-copy"><strong>{invoice.invoice_number}</strong><span>{invoice.client?.company || invoice.client?.name || 'Unassigned client'}</span></div><div style={{ textAlign: 'right' }}><div className="recent-amount">{formatCurrency(invoice.amount)}</div><div style={{ marginTop: 4 }}><StatusPill status={invoice.status} /></div></div></div>) : <div className="empty-state"><p>No invoices yet.</p><Link className="card-link" to="/app/invoices">Add your first invoice</Link></div>}</div></section>

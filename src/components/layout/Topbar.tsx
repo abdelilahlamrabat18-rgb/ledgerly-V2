@@ -1,7 +1,9 @@
-import { Bell, Globe, Menu, Search } from 'lucide-react';
+import { Bell, Globe, Menu, Search, X, ChevronDown } from 'lucide-react';
 import { useLocation } from 'react-router-dom';
+import { useEffect, useRef, useState } from 'react';
 import { useAuth } from '../../context/AuthContext';
 import { usePreferences } from '../../context/PreferencesContext';
+import type { SupportedLanguage } from '../../context/PreferencesContext';
 import { initials } from '../../lib/utils';
 
 const titles: Record<string, string> = { '/app': 'Dashboard', '/app/transactions': 'Transactions', '/app/analytics': 'Analytics', '/app/clients': 'Clients', '/app/invoices': 'Invoices', '/app/expenses': 'Expenses', '/app/orders': 'Orders', '/app/google-sheets': 'Data Import', '/app/settings': 'Settings' };
@@ -12,7 +14,50 @@ export function Topbar({ onMenu }: { onMenu: () => void }) {
   const { currency, language, setCurrency, setLanguage, supportedCurrencies, supportedLanguages, formatCurrency } = usePreferences();
   const name = isDemo ? 'Demo workspace' : displayName;
   const currentLang = supportedLanguages.find(l => l.code === language) || supportedLanguages[0];
-  const currencyDisplayName = new Intl.DisplayNames(language, { type: 'currency' }).of(currency) || currency;
+  const currencyDisplayName = new Intl.DisplayNames(language as string, { type: 'currency' }).of(currency) || currency;
+
+  const [openDropdown, setOpenDropdown] = useState<'currency' | 'language' | null>(null);
+  const currencyDropdownRef = useRef<HTMLDivElement>(null);
+  const languageDropdownRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    function handleClickOutside(e: MouseEvent) {
+      if (currencyDropdownRef.current && !currencyDropdownRef.current.contains(e.target as Node)) {
+        setOpenDropdown(prev => prev === 'currency' ? null : prev);
+      }
+      if (languageDropdownRef.current && !languageDropdownRef.current.contains(e.target as Node)) {
+        setOpenDropdown(prev => prev === 'language' ? null : prev);
+      }
+    }
+    function handleEscape(e: KeyboardEvent) {
+      if (e.key === 'Escape') setOpenDropdown(null);
+    }
+    document.addEventListener('mousedown', handleClickOutside);
+    document.addEventListener('keydown', handleEscape);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+      document.removeEventListener('keydown', handleEscape);
+    };
+  }, []);
+
+  const toggleDropdown = (dropdown: 'currency' | 'language') => {
+    setOpenDropdown(prev => prev === dropdown ? null : dropdown);
+  };
+
+  const handleCurrencySelect = (code: string) => {
+    setCurrency(code);
+    setOpenDropdown(null);
+  };
+
+  const handleLanguageSelect = (code: SupportedLanguage) => {
+    setLanguage(code);
+    setOpenDropdown(null);
+  };
+
+  const filteredCurrencies = supportedCurrencies.filter(code => {
+    const displayName = new Intl.DisplayNames(language as string, { type: 'currency' }).of(code) || code;
+    return true;
+  });
 
   return (
     <header className="topbar">
@@ -24,59 +69,146 @@ export function Topbar({ onMenu }: { onMenu: () => void }) {
       <div className="topbar-actions">
         <button className="icon-button" aria-label="Notifications"><Bell size={17} /></button>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <div style={{ position: 'relative' }}>
-            <button className="icon-button" aria-label="Currency" onClick={() => {}} style={{ padding: 6 }}>
+          <div ref={currencyDropdownRef} style={{ position: 'relative' }}>
+            <button
+              className="icon-button"
+              aria-label="Currency"
+              aria-expanded={openDropdown === 'currency'}
+              aria-haspopup="listbox"
+              onClick={() => toggleDropdown('currency')}
+              style={{ padding: 6, display: 'flex', alignItems: 'center', gap: 4 }}
+            >
               <Globe size={17} />
+              <ChevronDown size={12} style={{ color: '#9aa4b2' }} />
             </button>
-            <div style={{ position: 'absolute', top: '100%', right: 0, marginTop: 8, background: '#fff', border: '1px solid #e8ebf1', borderRadius: 8, boxShadow: '0 8px 24px rgba(20,28,40,0.12)', zIndex: 50, minWidth: 220, maxHeight: 280, overflow: 'auto' }}>
-              <div style={{ padding: 8 }}>
-                <input
-                  type="text"
-                  placeholder="Search currencies..."
-                  style={{ width: '100%', padding: '8px 10px', border: '1px solid #e8ebf1', borderRadius: 6, fontSize: 12, marginBottom: 8, outline: 'none' }}
-                  onInput={(e) => {
-                    const filter = (e.target as HTMLInputElement).value.toLowerCase();
-                    const items = document.querySelectorAll('[data-currency]');
-                    items.forEach(item => {
-                      const code = (item as HTMLElement).dataset.currency || '';
-                      const name = (item as HTMLElement).textContent || '';
-                      (item as HTMLElement).style.display = code.toLowerCase().includes(filter) || name.toLowerCase().includes(filter) ? 'flex' : 'none';
-                    });
-                  }}
-                />
-                {supportedCurrencies.map(code => {
-                  const displayName = new Intl.DisplayNames(language, { type: 'currency' }).of(code) || code;
+            {openDropdown === 'currency' && (
+              <div
+                style={{
+                  position: 'absolute',
+                  top: '100%',
+                  right: 0,
+                  marginTop: 8,
+                  background: '#fff',
+                  border: '1px solid #e8ebf1',
+                  borderRadius: 8,
+                  boxShadow: '0 8px 24px rgba(20,28,40,0.12)',
+                  zIndex: 50,
+                  minWidth: 220,
+                  maxHeight: 280,
+                  overflow: 'auto',
+                }}
+                role="listbox"
+              >
+                <div style={{ padding: 8 }}>
+                  <input
+                    type="text"
+                    placeholder="Search currencies..."
+                    style={{ width: '100%', padding: '8px 10px', border: '1px solid #e8ebf1', borderRadius: 6, fontSize: 12, marginBottom: 8, outline: 'none' }}
+                    onInput={(e) => {
+                      const filter = (e.target as HTMLInputElement).value.toLowerCase();
+                      const items = document.querySelectorAll('[data-currency]');
+                      items.forEach(item => {
+                        const code = (item as HTMLElement).dataset.currency || '';
+                        const name = (item as HTMLElement).textContent || '';
+                        (item as HTMLElement).style.display = code.toLowerCase().includes(filter) || name.toLowerCase().includes(filter) ? 'flex' : 'none';
+                      });
+                    }}
+                  />
+                  {supportedCurrencies.map(code => {
+                    const displayName = new Intl.DisplayNames(language, { type: 'currency' }).of(code) || code;
+                    const isActive = currency === code;
+                    return (
+                      <button
+                        key={code}
+                        data-currency={code}
+                        onClick={() => handleCurrencySelect(code)}
+                        role="option"
+                        aria-selected={isActive}
+                        style={{
+                          width: '100%',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'space-between',
+                          padding: '8px 10px',
+                          background: isActive ? '#f2fbf7' : 'none',
+                          border: 'none',
+                          cursor: 'pointer',
+                          fontSize: 12,
+                          color: isActive ? '#1e4d36' : '#3d4852',
+                          borderRadius: 6,
+                          textAlign: 'left',
+                          fontWeight: isActive ? 600 : 400,
+                        }}
+                      >
+                        <span>{displayName}</span>
+                        <span style={{ color: '#9aa4b2', fontSize: 10 }}>{code}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+          </div>
+          <div ref={languageDropdownRef} style={{ position: 'relative' }}>
+            <button
+              className="icon-button"
+              aria-label="Language"
+              aria-expanded={openDropdown === 'language'}
+              aria-haspopup="listbox"
+              onClick={() => toggleDropdown('language')}
+              style={{ padding: 6, display: 'flex', alignItems: 'center', gap: 4 }}
+            >
+              <span style={{ fontSize: 12, fontWeight: 600, color: '#3d4852' }}>{currentLang.code.toUpperCase()}</span>
+              <ChevronDown size={12} style={{ color: '#9aa4b2' }} />
+            </button>
+            {openDropdown === 'language' && (
+              <div
+                style={{
+                  position: 'absolute',
+                  top: '100%',
+                  right: 0,
+                  marginTop: 8,
+                  background: '#fff',
+                  border: '1px solid #e8ebf1',
+                  borderRadius: 8,
+                  boxShadow: '0 8px 24px rgba(20,28,40,0.12)',
+                  zIndex: 50,
+                  minWidth: 160,
+                }}
+                role="listbox"
+              >
+                {supportedLanguages.map(lang => {
+                  const isActive = language === lang.code;
                   return (
                     <button
-                      key={code}
-                      data-currency={code}
-                      onClick={() => setCurrency(code)}
-                      style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 10px', background: 'none', border: 'none', cursor: 'pointer', fontSize: 12, color: '#3d4852', borderRadius: 6, textAlign: 'left' }}
+                      key={lang.code}
+                      onClick={() => handleLanguageSelect(lang.code)}
+                      role="option"
+                      aria-selected={isActive}
+                      style={{
+                        width: '100%',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        padding: '10px 12px',
+                        background: isActive ? '#f2fbf7' : 'none',
+                        border: 'none',
+                        cursor: 'pointer',
+                        fontSize: 13,
+                        color: isActive ? '#1e4d36' : '#3d4852',
+                        borderRadius: 6,
+                        textAlign: 'left',
+                        fontWeight: isActive ? 600 : 400,
+                        borderTop: lang.code === supportedLanguages[0].code ? 'none' : '1px solid #f0f2f5',
+                      }}
                     >
-                      <span>{displayName}</span>
-                      <span style={{ color: '#9aa4b2', fontSize: 10 }}>{code}</span>
+                      <span>{lang.nativeName}</span>
+                      <span style={{ color: '#9aa4b2', fontSize: 10 }}>{lang.name}</span>
                     </button>
                   );
                 })}
               </div>
-            </div>
-          </div>
-          <div style={{ position: 'relative' }}>
-            <button className="icon-button" aria-label="Language" onClick={() => {}} style={{ padding: 6 }}>
-              <span style={{ fontSize: 12, fontWeight: 600, color: '#3d4852' }}>{currentLang.code.toUpperCase()}</span>
-            </button>
-            <div style={{ position: 'absolute', top: '100%', right: 0, marginTop: 8, background: '#fff', border: '1px solid #e8ebf1', borderRadius: 8, boxShadow: '0 8px 24px rgba(20,28,40,0.12)', zIndex: 50, minWidth: 160 }}>
-              {supportedLanguages.map(lang => (
-                <button
-                  key={lang.code}
-                  onClick={() => setLanguage(lang.code)}
-                  style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 12px', background: 'none', border: 'none', cursor: 'pointer', fontSize: 13, color: '#3d4852', borderRadius: 6, textAlign: 'left', borderTop: lang.code === supportedLanguages[0].code ? 'none' : '1px solid #f0f2f5' }}
-                >
-                  <span>{lang.nativeName}</span>
-                  <span style={{ color: '#9aa4b2', fontSize: 10 }}>{lang.name}</span>
-                </button>
-              ))}
-            </div>
+            )}
           </div>
         </div>
         <div className="topbar-profile">

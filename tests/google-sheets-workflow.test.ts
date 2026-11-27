@@ -31,7 +31,7 @@ describe("GoogleSheetsPage file import workflow", () => {
   });
 
   it("redirects to dashboard on successful import", () => {
-    expect(page).toMatch(/navigate\('\/app\/dashboard'\)/);
+    expect(page).toMatch(/navigate\('\/app'\)/);
   });
 
   it("does not include direct Google Sheet URL/ID paste or Drive discovery", () => {

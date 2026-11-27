@@ -1,4 +1,4 @@
-import { Package, Pencil, Plus, Search, Trash2, Download, ChevronDown, ChevronUp } from 'lucide-react';
+import { Package, Pencil, Plus, Search, Trash2, Download, ChevronDown, ChevronUp, Check, X, Calendar, DollarSign, User, Save, Edit2 } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { ConfirmDialog } from '../../components/shared/ConfirmDialog';
 import { LoadingState } from '../../components/shared/LoadingState';
@@ -28,6 +28,9 @@ export function OrdersPage() {
   const [deleteTarget, setDeleteTarget] = useState<Order | null>(null);
   const [saving, setSaving] = useState(false);
   const [showExportMenu, setShowExportMenu] = useState(false);
+  // Inline editing state
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editForm, setEditForm] = useState<Partial<OrderForm>>({});
 
   const filtered = useMemo(() => orders.items.filter((order) => (status === 'all' || order.status === status) && `${order.product} ${order.client?.name || ''} ${order.client?.company || ''}`.toLowerCase().includes(query.toLowerCase())), [orders.items, query, status]);
 
@@ -64,6 +67,50 @@ export function OrdersPage() {
     if (order.status === newStatus) return;
     try { await orders.update(order.id, { status: newStatus }); toast(`Order marked as ${newStatus}.`); }
     catch (err) { toast(err instanceof Error ? err.message : 'Failed to update status.'); }
+  }
+
+  // Inline edit functions
+  function startInlineEdit(order: Order) {
+    setEditingId(order.id);
+    setEditForm({
+      client_id: order.client_id || '',
+      product: order.product,
+      quantity: String(order.quantity),
+      total: String(order.total),
+      status: order.status,
+      order_date: order.order_date,
+      notes: order.notes || '',
+    });
+  }
+
+  function cancelInlineEdit() {
+    setEditingId(null);
+    setEditForm({});
+  }
+
+  async function saveInlineEdit(order: Order) {
+    if (saving) return;
+    const quantity = validateQuantity(editForm.quantity || '');
+    if (quantity === null) { toast('Enter a valid quantity.', 'error'); return; }
+    const total = validateAmount(editForm.total || '');
+    if (total === null) { toast('Enter a valid total.', 'error'); return; }
+    if (!editForm.product?.trim()) { toast('Product or service is required.', 'error'); return; }
+    setSaving(true);
+    try {
+      const payload = {
+        client_id: editForm.client_id || null,
+        product: editForm.product,
+        quantity,
+        total,
+        status: editForm.status as OrderStatus,
+        order_date: editForm.order_date,
+        notes: editForm.notes || '',
+      };
+      await orders.update(order.id, payload);
+      toast('Order updated.');
+      cancelInlineEdit();
+    } catch (err) { toast(err instanceof Error ? err.message : 'Unable to save order.', 'error'); }
+    finally { setSaving(false); }
   }
 
   const handleExport = () => {
@@ -136,36 +183,114 @@ export function OrdersPage() {
                 <tr><th>Product / service</th><th>Client</th><th>Qty</th><th>Status</th><th>Date</th><th>Total</th><th /></tr>
               </thead>
               <tbody>
-                {filtered.map((order) => (
-                  <tr key={order.id}>
-                    <td><strong>{order.product}</strong></td>
-                    <td>{order.client?.company || order.client?.name || clients.items.find((client) => client.id === order.client_id)?.company || clients.items.find((client) => client.id === order.client_id)?.name || '—'}</td>
-                    <td>{order.quantity}</td>
-                    <td>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                        <StatusPill status={order.status} />
-                        <div style={{ position: 'relative' }}>
-                          <button className="icon-button" aria-label="Change status" onClick={(e) => { e.stopPropagation(); }}><ChevronDown size={12} /></button>
-                          <div style={{ position: 'absolute', top: '100%', right: 0, marginTop: 4, background: '#fff', border: '1px solid #e8ebf1', borderRadius: 6, boxShadow: '0 8px 24px rgba(20,28,40,0.12)', zIndex: 50, minWidth: 140 }}>
-                            {statusOptions.map((s) => (
-                              <button key={s} className="dropdown-item" onClick={(e) => { e.stopPropagation(); quickStatusChange(order, s); }} style={{ width: '100%', textAlign: 'left', padding: '8px 12px', background: 'none', border: 'none', cursor: 'pointer', fontSize: 11, color: '#3d4852', borderTop: s === statusOptions[0] ? 'none' : '1px solid #f0f2f5' }}>
-                                {s.charAt(0).toUpperCase() + s.slice(1)}
+                {filtered.map((order) => {
+                  const isEditing = editingId === order.id;
+                  const clientName = order.client?.company || order.client?.name || clients.items.find((client) => client.id === order.client_id)?.company || clients.items.find((client) => client.id === order.client_id)?.name || '—';
+                  return (
+                    <tr key={order.id} style={isEditing ? { background: '#f2fbf7' } : {}}>
+                      {isEditing ? (
+                        <>
+                          <td>
+                            <input
+                              className="form-input"
+                              value={editForm.product || ''}
+                              onChange={(e) => setEditForm({ ...editForm, product: e.target.value })}
+                              autoFocus
+                            />
+                          </td>
+                          <td>
+                            <select
+                              className="form-select"
+                              value={editForm.client_id || ''}
+                              onChange={(e) => setEditForm({ ...editForm, client_id: e.target.value })}
+                            >
+                              <option value="">Unassigned</option>
+                              {clients.items.map((client) => (
+                                <option key={client.id} value={client.id}>{client.company || client.name}</option>
+                              ))}
+                            </select>
+                          </td>
+                          <td>
+                            <input
+                              className="form-input"
+                              type="number"
+                              min="1"
+                              value={editForm.quantity || ''}
+                              onChange={(e) => setEditForm({ ...editForm, quantity: e.target.value })}
+                            />
+                          </td>
+                          <td>
+                            <select
+                              className="form-select"
+                              value={editForm.status || 'pending'}
+                              onChange={(e) => setEditForm({ ...editForm, status: e.target.value as OrderStatus })}
+                            >
+                              {statusOptions.map((s) => (
+                                <option key={s} value={s}>{s.charAt(0).toUpperCase() + s.slice(1)}</option>
+                              ))}
+                            </select>
+                          </td>
+                          <td>
+                            <input
+                              className="form-input"
+                              type="date"
+                              value={editForm.order_date || ''}
+                              onChange={(e) => setEditForm({ ...editForm, order_date: e.target.value })}
+                            />
+                          </td>
+                          <td>
+                            <input
+                              className="form-input"
+                              type="number"
+                              min="0"
+                              step="0.01"
+                              value={editForm.total || ''}
+                              onChange={(e) => setEditForm({ ...editForm, total: e.target.value })}
+                              placeholder="0.00"
+                            />
+                          </td>
+                          <td>
+                            <div style={{ display: 'flex', gap: 4 }}>
+                              <button className="button button-primary" onClick={() => saveInlineEdit(order)} disabled={saving}>
+                                {saving ? <Save size={14} /> : <Check size={14} />}
                               </button>
-                            ))}
-                          </div>
-                        </div>
-                      </div>
-                    </td>
-                    <td>{formatDate(order.order_date, true)}</td>
-                    <td><strong>{formatCurrency(order.total)}</strong></td>
-                    <td>
-                      <div style={{ display: 'flex', gap: 4 }}>
-                        <button className="button button-ghost" onClick={() => openEdit(order)} aria-label="Edit order"><Pencil size={14} /></button>
-                        <button className="button button-ghost" onClick={() => { setDeleteTarget(order); }} aria-label="Delete order"><Trash2 size={14} /></button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
+                              <button className="button button-ghost" onClick={cancelInlineEdit} aria-label="Cancel"><X size={14} /></button>
+                            </div>
+                          </td>
+                        </>
+                      ) : (
+                        <>
+                          <td><strong>{order.product}</strong></td>
+                          <td>{clientName}</td>
+                          <td>{order.quantity}</td>
+                          <td>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                              <StatusPill status={order.status} />
+                              <div style={{ position: 'relative' }}>
+                                <button className="icon-button" aria-label="Change status" onClick={(e) => { e.stopPropagation(); }}><ChevronDown size={12} /></button>
+                                <div style={{ position: 'absolute', top: '100%', right: 0, marginTop: 4, background: '#fff', border: '1px solid #e8ebf1', borderRadius: 6, boxShadow: '0 8px 24px rgba(20,28,40,0.12)', zIndex: 50, minWidth: 140 }}>
+                                  {statusOptions.map((s) => (
+                                    <button key={s} className="dropdown-item" onClick={(e) => { e.stopPropagation(); quickStatusChange(order, s); }} style={{ width: '100%', textAlign: 'left', padding: '8px 12px', background: 'none', border: 'none', cursor: 'pointer', fontSize: 11, color: '#3d4852', borderTop: s === statusOptions[0] ? 'none' : '1px solid #f0f2f5' }}>
+                                      {s.charAt(0).toUpperCase() + s.slice(1)}
+                                    </button>
+                                  ))}
+                                </div>
+                              </div>
+                            </div>
+                          </td>
+                          <td>{formatDate(order.order_date, true)}</td>
+                          <td><strong>{formatCurrency(order.total)}</strong></td>
+                          <td>
+                            <div style={{ display: 'flex', gap: 4 }}>
+                              <button className="button button-ghost" onClick={() => startInlineEdit(order)} aria-label="Edit order"><Edit2 size={14} /></button>
+                              <button className="button button-ghost" onClick={() => { setDeleteTarget(order); }} aria-label="Delete order"><Trash2 size={14} /></button>
+                            </div>
+                          </td>
+                        </>
+                      )}
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>

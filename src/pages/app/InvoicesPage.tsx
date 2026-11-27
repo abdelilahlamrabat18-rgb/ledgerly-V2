@@ -1,4 +1,4 @@
-import { FileText, Pencil, Plus, Search, Trash2, Download, ChevronDown, ChevronUp } from 'lucide-react';
+import { FileText, Pencil, Plus, Search, Trash2, Download, ChevronDown, ChevronUp, Check, X, Calendar, DollarSign, User, Save, Edit2 } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { ConfirmDialog } from '../../components/shared/ConfirmDialog';
 import { LoadingState } from '../../components/shared/LoadingState';
@@ -28,6 +28,9 @@ export function InvoicesPage() {
   const [deleteTarget, setDeleteTarget] = useState<Invoice | null>(null);
   const [saving, setSaving] = useState(false);
   const [showExportMenu, setShowExportMenu] = useState(false);
+  // Inline editing state
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editForm, setEditForm] = useState<Partial<InvoiceForm>>({});
 
   const filtered = useMemo(() => invoices.items.filter((invoice) => (status === 'all' || invoice.status === status) && `${invoice.invoice_number} ${invoice.client?.name || ''} ${invoice.client?.company || ''}`.toLowerCase().includes(query.toLowerCase())), [invoices.items, query, status]);
 
@@ -62,6 +65,48 @@ export function InvoicesPage() {
     if (invoice.status === newStatus) return;
     try { await invoices.update(invoice.id, { status: newStatus }); toast(`Invoice marked as ${newStatus}.`); }
     catch (err) { toast(err instanceof Error ? err.message : 'Failed to update status.'); }
+  }
+
+  // Inline edit functions
+  function startInlineEdit(invoice: Invoice) {
+    setEditingId(invoice.id);
+    setEditForm({
+      invoice_number: invoice.invoice_number,
+      client_id: invoice.client_id || '',
+      amount: String(invoice.amount),
+      status: invoice.status,
+      issue_date: invoice.issue_date,
+      due_date: invoice.due_date || '',
+      notes: invoice.notes || '',
+    });
+  }
+
+  function cancelInlineEdit() {
+    setEditingId(null);
+    setEditForm({});
+  }
+
+  async function saveInlineEdit(invoice: Invoice) {
+    if (saving) return;
+    const amount = validateAmount(editForm.amount || '');
+    if (amount === null) { toast('Enter a valid invoice amount.', 'error'); return; }
+    if (!editForm.invoice_number?.trim()) { toast('Invoice number is required.', 'error'); return; }
+    setSaving(true);
+    try {
+      const payload = { 
+        invoice_number: editForm.invoice_number,
+        client_id: editForm.client_id || null,
+        amount,
+        status: editForm.status as InvoiceStatus,
+        issue_date: editForm.issue_date,
+        due_date: editForm.due_date || null,
+        notes: editForm.notes || '',
+      };
+      await invoices.update(invoice.id, payload);
+      toast('Invoice updated.');
+      cancelInlineEdit();
+    } catch (err) { toast(err instanceof Error ? err.message : 'Unable to save invoice.', 'error'); }
+    finally { setSaving(false); }
   }
 
   const handleExport = () => {
@@ -136,36 +181,113 @@ export function InvoicesPage() {
                 <tr><th>Invoice</th><th>Client</th><th>Issue date</th><th>Due date</th><th>Status</th><th>Amount</th><th /></tr>
               </thead>
               <tbody>
-                {filtered.map((invoice) => (
-                  <tr key={invoice.id}>
-                    <td><strong>{invoice.invoice_number}</strong></td>
-                    <td>{invoice.client?.company || invoice.client?.name || clients.items.find((client) => client.id === invoice.client_id)?.company || clients.items.find((client) => client.id === invoice.client_id)?.name || 'Unassigned'}</td>
-                    <td>{formatDate(invoice.issue_date, true)}</td>
-                    <td>{formatDate(invoice.due_date, true)}</td>
-                    <td>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                        <StatusPill status={invoice.status} />
-                        <div style={{ position: 'relative' }}>
-                          <button className="icon-button" aria-label="Change status" onClick={(e) => { e.stopPropagation(); }}><ChevronDown size={12} /></button>
-                          <div style={{ position: 'absolute', top: '100%', right: 0, marginTop: 4, background: '#fff', border: '1px solid #e8ebf1', borderRadius: 6, boxShadow: '0 8px 24px rgba(20,28,40,0.12)', zIndex: 50, minWidth: 140 }}>
-                            {statusOptions.map((s) => (
-                              <button key={s} className="dropdown-item" onClick={(e) => { e.stopPropagation(); quickStatusChange(invoice, s); }} style={{ width: '100%', textAlign: 'left', padding: '8px 12px', background: 'none', border: 'none', cursor: 'pointer', fontSize: 11, color: '#3d4852', borderTop: s === statusOptions[0] ? 'none' : '1px solid #f0f2f5' }}>
-                                {s.charAt(0).toUpperCase() + s.slice(1)}
+                {filtered.map((invoice) => {
+                  const isEditing = editingId === invoice.id;
+                  const clientName = invoice.client?.company || invoice.client?.name || clients.items.find((client) => client.id === invoice.client_id)?.company || clients.items.find((client) => client.id === invoice.client_id)?.name || 'Unassigned';
+                  return (
+                    <tr key={invoice.id} style={isEditing ? { background: '#f2fbf7' } : {}}>
+                      {isEditing ? (
+                        <>
+                          <td>
+                            <input
+                              className="form-input"
+                              value={editForm.invoice_number || ''}
+                              onChange={(e) => setEditForm({ ...editForm, invoice_number: e.target.value })}
+                              autoFocus
+                            />
+                          </td>
+                          <td>
+                            <select
+                              className="form-select"
+                              value={editForm.client_id || ''}
+                              onChange={(e) => setEditForm({ ...editForm, client_id: e.target.value })}
+                            >
+                              <option value="">Unassigned</option>
+                              {clients.items.map((client) => (
+                                <option key={client.id} value={client.id}>{client.company || client.name}</option>
+                              ))}
+                            </select>
+                          </td>
+                          <td>
+                            <input
+                              className="form-input"
+                              type="date"
+                              value={editForm.issue_date || ''}
+                              onChange={(e) => setEditForm({ ...editForm, issue_date: e.target.value })}
+                            />
+                          </td>
+                          <td>
+                            <input
+                              className="form-input"
+                              type="date"
+                              value={editForm.due_date || ''}
+                              onChange={(e) => setEditForm({ ...editForm, due_date: e.target.value })}
+                            />
+                          </td>
+                          <td>
+                            <select
+                              className="form-select"
+                              value={editForm.status || 'pending'}
+                              onChange={(e) => setEditForm({ ...editForm, status: e.target.value as InvoiceStatus })}
+                            >
+                              {statusOptions.map((s) => (
+                                <option key={s} value={s}>{s.charAt(0).toUpperCase() + s.slice(1)}</option>
+                              ))}
+                            </select>
+                          </td>
+                          <td>
+                            <input
+                              className="form-input"
+                              type="number"
+                              min="0"
+                              step="0.01"
+                              value={editForm.amount || ''}
+                              onChange={(e) => setEditForm({ ...editForm, amount: e.target.value })}
+                              placeholder="0.00"
+                            />
+                          </td>
+                          <td>
+                            <div style={{ display: 'flex', gap: 4 }}>
+                              <button className="button button-primary" onClick={() => saveInlineEdit(invoice)} disabled={saving}>
+                                {saving ? <Save size={14} /> : <Check size={14} />}
                               </button>
-                            ))}
-                          </div>
-                        </div>
-                      </div>
-                    </td>
-                    <td><strong>{formatCurrency(invoice.amount)}</strong></td>
-                    <td>
-                      <div style={{ display: 'flex', gap: 4 }}>
-                        <button className="button button-ghost" onClick={() => openEdit(invoice)} aria-label="Edit invoice"><Pencil size={14} /></button>
-                        <button className="button button-ghost" onClick={() => { setDeleteTarget(invoice); }} aria-label="Delete invoice"><Trash2 size={14} /></button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
+                              <button className="button button-ghost" onClick={cancelInlineEdit} aria-label="Cancel"><X size={14} /></button>
+                            </div>
+                          </td>
+                        </>
+                      ) : (
+                        <>
+                          <td><strong>{invoice.invoice_number}</strong></td>
+                          <td>{clientName}</td>
+                          <td>{formatDate(invoice.issue_date, true)}</td>
+                          <td>{formatDate(invoice.due_date, true)}</td>
+                          <td>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                              <StatusPill status={invoice.status} />
+                              <div style={{ position: 'relative' }}>
+                                <button className="icon-button" aria-label="Change status" onClick={(e) => { e.stopPropagation(); }}><ChevronDown size={12} /></button>
+                                <div style={{ position: 'absolute', top: '100%', right: 0, marginTop: 4, background: '#fff', border: '1px solid #e8ebf1', borderRadius: 6, boxShadow: '0 8px 24px rgba(20,28,40,0.12)', zIndex: 50, minWidth: 140 }}>
+                                  {statusOptions.map((s) => (
+                                    <button key={s} className="dropdown-item" onClick={(e) => { e.stopPropagation(); quickStatusChange(invoice, s); }} style={{ width: '100%', textAlign: 'left', padding: '8px 12px', background: 'none', border: 'none', cursor: 'pointer', fontSize: 11, color: '#3d4852', borderTop: s === statusOptions[0] ? 'none' : '1px solid #f0f2f5' }}>
+                                      {s.charAt(0).toUpperCase() + s.slice(1)}
+                                    </button>
+                                  ))}
+                                </div>
+                              </div>
+                            </div>
+                          </td>
+                          <td><strong>{formatCurrency(invoice.amount)}</strong></td>
+                          <td>
+                            <div style={{ display: 'flex', gap: 4 }}>
+                              <button className="button button-ghost" onClick={() => startInlineEdit(invoice)} aria-label="Edit invoice"><Edit2 size={14} /></button>
+                              <button className="button button-ghost" onClick={() => { setDeleteTarget(invoice); }} aria-label="Delete invoice"><Trash2 size={14} /></button>
+                            </div>
+                          </td>
+                        </>
+                      )}
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>

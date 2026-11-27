@@ -63,7 +63,7 @@ describe('GoogleSheetsPage multi-format file upload flow', () => {
   });
 
   it('redirects to dashboard after successful import', () => {
-    expect(page).toMatch(/navigate\('\/app\/dashboard'\)/);
+    expect(page).toMatch(/navigate\('\/app'\)/);
   });
 
   it('does not expose tokens or use Drive discovery/picker', () => {

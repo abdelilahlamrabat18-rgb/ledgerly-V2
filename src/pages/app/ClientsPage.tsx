@@ -1,4 +1,4 @@
-import { Mail, MoreHorizontal, Pencil, Phone, Plus, Search, Trash2, UserRound, Download } from 'lucide-react';
+import { Mail, MoreHorizontal, Pencil, Phone, Plus, Search, Trash2, UserRound, Download, Check, X, Save, Edit2 } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { ConfirmDialog } from '../../components/shared/ConfirmDialog';
 import { LoadingState } from '../../components/shared/LoadingState';
@@ -25,6 +25,9 @@ export function ClientsPage() {
   const [deleteTarget, setDeleteTarget] = useState<Client | null>(null);
   const [saving, setSaving] = useState(false);
   const [showExportMenu, setShowExportMenu] = useState(false);
+  // Inline editing state
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editForm, setEditForm] = useState<Partial<ClientForm>>({});
 
   const filtered = useMemo(() => items.filter((client) => `${client.name} ${client.company || ''} ${client.email || ''}`.toLowerCase().includes(query.toLowerCase())), [items, query]);
 
@@ -48,6 +51,44 @@ export function ClientsPage() {
     setSaving(true);
     try { await remove(deleteTarget.id); toast('Client deleted.'); setDeleteTarget(null); }
     catch (err) { toast(err instanceof Error ? err.message : 'Unable to delete client.', 'error'); }
+    finally { setSaving(false); }
+  }
+
+  // Inline edit functions
+  function startInlineEdit(client: Client) {
+    setEditingId(client.id);
+    setEditForm({
+      name: client.name,
+      email: client.email || '',
+      phone: client.phone || '',
+      company: client.company || '',
+      address: client.address || '',
+      notes: client.notes || '',
+    });
+  }
+
+  function cancelInlineEdit() {
+    setEditingId(null);
+    setEditForm({});
+  }
+
+  async function saveInlineEdit(client: Client) {
+    if (saving) return;
+    if (!editForm.name?.trim()) { toast('Name is required.', 'error'); return; }
+    setSaving(true);
+    try {
+      const payload = {
+        name: editForm.name,
+        email: editForm.email || null,
+        phone: editForm.phone || null,
+        company: editForm.company || null,
+        address: editForm.address || null,
+        notes: editForm.notes || null,
+      };
+      await update(client.id, payload);
+      toast('Client updated.');
+      cancelInlineEdit();
+    } catch (err) { toast(err instanceof Error ? err.message : 'Unable to save client.', 'error'); }
     finally { setSaving(false); }
   }
 
@@ -112,21 +153,69 @@ export function ClientsPage() {
                 <tr><th>Client</th><th>Contact</th><th>Company</th><th>Added</th><th /></tr>
               </thead>
               <tbody>
-                {filtered.map((client) => (
-                  <tr key={client.id} onDoubleClick={() => { setSelected(client); setModal('details'); }}>
-                    <td><div className="table-person"><span className="avatar">{initials(client.name)}</span><div><strong>{client.name}</strong><span>{client.address || 'No address added'}</span></div></div></td>
-                    <td><div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>{client.email && <span style={{ display: 'flex', alignItems: 'center', gap: 5 }}><Mail size={11} />{client.email}</span>}{client.phone && <span style={{ display: 'flex', alignItems: 'center', gap: 5 }}><Phone size={11} />{client.phone}</span>}</div></td>
-                    <td>{client.company || '—'}</td>
-                    <td>{client.created_at ? formatDateLocale(client.created_at, true) : '—'}</td>
-                    <td>
-                      <div style={{ display: 'flex', gap: 4 }}>
-                        <button className="button button-ghost" onClick={() => { setSelected(client); setModal('details'); }} aria-label="View client"><MoreHorizontal size={14} /></button>
-                        <button className="button button-ghost" onClick={() => openEdit(client)} aria-label="Edit client"><Pencil size={14} /></button>
-                        <button className="button button-ghost" onClick={() => { setDeleteTarget(client); }} aria-label="Delete client"><Trash2 size={14} /></button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
+                {filtered.map((client) => {
+                  const isEditing = editingId === client.id;
+                  return (
+                    <tr key={client.id} style={isEditing ? { background: '#f2fbf7' } : {}}>
+                      {isEditing ? (
+                        <>
+                          <td>
+                            <input
+                              className="form-input"
+                              value={editForm.name || ''}
+                              onChange={(e) => setEditForm({ ...editForm, name: e.target.value })}
+                              autoFocus
+                            />
+                          </td>
+                          <td>
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                              <input className="form-input" type="email" placeholder="Email" value={editForm.email || ''} onChange={(e) => setEditForm({ ...editForm, email: e.target.value })} />
+                              <input className="form-input" placeholder="Phone" value={editForm.phone || ''} onChange={(e) => setEditForm({ ...editForm, phone: e.target.value })} />
+                            </div>
+                          </td>
+                          <td>
+                            <input
+                              className="form-input"
+                              placeholder="Company"
+                              value={editForm.company || ''}
+                              onChange={(e) => setEditForm({ ...editForm, company: e.target.value })}
+                            />
+                          </td>
+                          <td>
+                            <input
+                              className="form-input"
+                              placeholder="Address"
+                              value={editForm.address || ''}
+                              onChange={(e) => setEditForm({ ...editForm, address: e.target.value })}
+                            />
+                          </td>
+                          <td>
+                            <div style={{ display: 'flex', gap: 4 }}>
+                              <button className="button button-primary" onClick={() => saveInlineEdit(client)} disabled={saving}>
+                                {saving ? <Save size={14} /> : <Check size={14} />}
+                              </button>
+                              <button className="button button-ghost" onClick={cancelInlineEdit} aria-label="Cancel"><X size={14} /></button>
+                            </div>
+                          </td>
+                        </>
+                      ) : (
+                        <>
+                          <td><div className="table-person"><span className="avatar">{initials(client.name)}</span><div><strong>{client.name}</strong><span>{client.address || 'No address added'}</span></div></div></td>
+                          <td><div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>{client.email && <span style={{ display: 'flex', alignItems: 'center', gap: 5 }}><Mail size={11} />{client.email}</span>}{client.phone && <span style={{ display: 'flex', alignItems: 'center', gap: 5 }}><Phone size={11} />{client.phone}</span>}</div></td>
+                          <td>{client.company || '—'}</td>
+                          <td>{client.created_at ? formatDateLocale(client.created_at, true) : '—'}</td>
+                          <td>
+                            <div style={{ display: 'flex', gap: 4 }}>
+                              <button className="button button-ghost" onClick={() => { setSelected(client); setModal('details'); }} aria-label="View client"><MoreHorizontal size={14} /></button>
+                              <button className="button button-ghost" onClick={() => startInlineEdit(client)} aria-label="Edit client"><Edit2 size={14} /></button>
+                              <button className="button button-ghost" onClick={() => { setDeleteTarget(client); }} aria-label="Delete client"><Trash2 size={14} /></button>
+                            </div>
+                          </td>
+                        </>
+                      )}
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>

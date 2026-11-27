@@ -1,4 +1,4 @@
-import { Pencil, Plus, Receipt, Search, Trash2, Download, ChevronDown, ChevronUp } from 'lucide-react';
+import { Pencil, Plus, Receipt, Search, Trash2, Download, ChevronDown, ChevronUp, Check, X, Calendar, DollarSign, Save, Edit2 } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { ConfirmDialog } from '../../components/shared/ConfirmDialog';
 import { LoadingState } from '../../components/shared/LoadingState';
@@ -27,6 +27,9 @@ export function ExpensesPage() {
   const [deleteTarget, setDeleteTarget] = useState<Expense | null>(null);
   const [saving, setSaving] = useState(false);
   const [showExportMenu, setShowExportMenu] = useState(false);
+  // Inline editing state
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editForm, setEditForm] = useState<Partial<ExpenseForm>>({});
 
   const filtered = useMemo(() => expenses.items.filter((expense) => (category === 'all' || expense.category === category) && `${expense.description} ${expense.category}`.toLowerCase().includes(query.toLowerCase())), [expenses.items, query, category]);
   const total = filtered.reduce((sum, expense) => sum + Number(expense.amount), 0);
@@ -55,6 +58,44 @@ export function ExpensesPage() {
     setSaving(true);
     try { await expenses.remove(deleteTarget.id); toast('Expense deleted.'); setDeleteTarget(null); }
     catch (err) { toast(err instanceof Error ? err.message : 'Unable to delete expense.', 'error'); }
+    finally { setSaving(false); }
+  }
+
+  // Inline edit functions
+  function startInlineEdit(expense: Expense) {
+    setEditingId(expense.id);
+    setEditForm({
+      description: expense.description,
+      category: expense.category,
+      amount: String(expense.amount),
+      date: expense.date,
+      notes: expense.notes || '',
+    });
+  }
+
+  function cancelInlineEdit() {
+    setEditingId(null);
+    setEditForm({});
+  }
+
+  async function saveInlineEdit(expense: Expense) {
+    if (saving) return;
+    const amount = validateAmount(editForm.amount || '');
+    if (amount === null) { toast('Enter a valid expense amount.', 'error'); return; }
+    if (!editForm.description?.trim()) { toast('Description is required.', 'error'); return; }
+    setSaving(true);
+    try {
+      const payload = {
+        description: editForm.description,
+        category: editForm.category,
+        amount,
+        date: editForm.date,
+        notes: editForm.notes || '',
+      };
+      await expenses.update(expense.id, payload);
+      toast('Expense updated.');
+      cancelInlineEdit();
+    } catch (err) { toast(err instanceof Error ? err.message : 'Unable to save expense.', 'error'); }
     finally { setSaving(false); }
   }
 
@@ -119,21 +160,85 @@ export function ExpensesPage() {
                 <tr><th>Description</th><th>Category</th><th>Date</th><th>Notes</th><th>Amount</th><th /></tr>
               </thead>
               <tbody>
-                {filtered.map((expense) => (
-                  <tr key={expense.id}>
-                    <td><strong>{expense.description}</strong></td>
-                    <td><span style={{ display: 'inline-block', background: '#f2f3f7', borderRadius: 5, padding: '5px 7px', fontSize: 9, color: '#697689', fontWeight: 700 }}>{expense.category}</span></td>
-                    <td>{formatDate(expense.date, true)}</td>
-                    <td>{expense.notes || '—'}</td>
-                    <td><strong>{formatCurrency(expense.amount)}</strong></td>
-                    <td>
-                      <div style={{ display: 'flex', gap: 4 }}>
-                        <button className="button button-ghost" onClick={() => openEdit(expense)} aria-label="Edit expense"><Pencil size={14} /></button>
-                        <button className="button button-ghost" onClick={() => { setDeleteTarget(expense); }} aria-label="Delete expense"><Trash2 size={14} /></button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
+                {filtered.map((expense) => {
+                  const isEditing = editingId === expense.id;
+                  return (
+                    <tr key={expense.id} style={isEditing ? { background: '#f2fbf7' } : {}}>
+                      {isEditing ? (
+                        <>
+                          <td>
+                            <input
+                              className="form-input"
+                              value={editForm.description || ''}
+                              onChange={(e) => setEditForm({ ...editForm, description: e.target.value })}
+                              autoFocus
+                            />
+                          </td>
+                          <td>
+                            <select
+                              className="form-select"
+                              value={editForm.category || 'Software'}
+                              onChange={(e) => setEditForm({ ...editForm, category: e.target.value })}
+                            >
+                              {categories.map((item) => (
+                                <option key={item} value={item}>{item}</option>
+                              ))}
+                            </select>
+                          </td>
+                          <td>
+                            <input
+                              className="form-input"
+                              type="date"
+                              value={editForm.date || ''}
+                              onChange={(e) => setEditForm({ ...editForm, date: e.target.value })}
+                            />
+                          </td>
+                          <td>
+                            <input
+                              className="form-input"
+                              value={editForm.notes || ''}
+                              onChange={(e) => setEditForm({ ...editForm, notes: e.target.value })}
+                              placeholder="Optional context…"
+                            />
+                          </td>
+                          <td>
+                            <input
+                              className="form-input"
+                              type="number"
+                              min="0"
+                              step="0.01"
+                              value={editForm.amount || ''}
+                              onChange={(e) => setEditForm({ ...editForm, amount: e.target.value })}
+                              placeholder="0.00"
+                            />
+                          </td>
+                          <td>
+                            <div style={{ display: 'flex', gap: 4 }}>
+                              <button className="button button-primary" onClick={() => saveInlineEdit(expense)} disabled={saving}>
+                                {saving ? <Save size={14} /> : <Check size={14} />}
+                              </button>
+                              <button className="button button-ghost" onClick={cancelInlineEdit} aria-label="Cancel"><X size={14} /></button>
+                            </div>
+                          </td>
+                        </>
+                      ) : (
+                        <>
+                          <td><strong>{expense.description}</strong></td>
+                          <td><span style={{ display: 'inline-block', background: '#f2f3f7', borderRadius: 5, padding: '5px 7px', fontSize: 9, color: '#697689', fontWeight: 700 }}>{expense.category}</span></td>
+                          <td>{formatDate(expense.date, true)}</td>
+                          <td>{expense.notes || '—'}</td>
+                          <td><strong>{formatCurrency(expense.amount)}</strong></td>
+                          <td>
+                            <div style={{ display: 'flex', gap: 4 }}>
+                              <button className="button button-ghost" onClick={() => startInlineEdit(expense)} aria-label="Edit expense"><Edit2 size={14} /></button>
+                              <button className="button button-ghost" onClick={() => { setDeleteTarget(expense); }} aria-label="Delete expense"><Trash2 size={14} /></button>
+                            </div>
+                          </td>
+                        </>
+                      )}
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
