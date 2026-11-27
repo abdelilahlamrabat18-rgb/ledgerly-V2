@@ -299,6 +299,49 @@ function validateMapping(target: EntityName, headers: string[], mapping: Record<
   return null;
 }
 
+function mapRecord(target: EntityName, headers: string[], row: string[], mapping: Record<string, string>, userId?: string, getVendorCategory?: (description: string) => string | undefined) {
+  const get = (field: string) => rowValue(row, headers, mapping, field);
+  const opt = (field: string) => { const v = get(field); return v || null; };
+  const common: Record<string, unknown> = userId ? { user_id: userId } : {};
+  if (target === 'clients') {
+    const name = get('name');
+    return name ? { ...common, name, email: opt('email'), phone: opt('phone'), company: opt('company'), address: opt('address'), notes: opt('notes') } : null;
+  }
+  if (target === 'invoices') {
+    const invoiceNumber = get('invoice_number');
+    const amount = parseAmount(get('amount'));
+    if (!invoiceNumber || amount === null || amount < 0) return null;
+    const validStatus = ['draft', 'pending', 'paid', 'overdue', 'cancelled'];
+    const status = get('status').toLowerCase();
+    const clientId = get('client_id');
+    return { ...common, invoice_number: invoiceNumber, amount, status: validStatus.includes(status) ? status : 'draft', issue_date: parseDate(get('issue_date')), due_date: get('due_date') ? parseDate(get('due_date')) : null, notes: opt('notes'), ...(clientId ? { client_id: clientId } : {}) };
+  }
+  if (target === 'expenses') {
+    const description = get('description');
+    const amount = parseAmount(get('amount'));
+    if (!description || amount === null || amount < 0) return null;
+    const vendorCategory = getVendorCategory ? getVendorCategory(description) : undefined;
+    return { ...common, description, category: get('category') || vendorCategory || 'Other', amount, date: parseDate(get('date')), notes: opt('notes') };
+  }
+  const product = get('product');
+  const total = parseAmount(get('total'));
+  if (!product || total === null || total < 0) return null;
+  const quantity = parseAmount(get('quantity')) || 1;
+  const validStatus = ['pending', 'processing', 'completed', 'cancelled'];
+  const status = get('status').toLowerCase();
+  const clientId = get('client_id');
+  return { ...common, product, quantity: Math.max(1, Math.floor(quantity)), total, status: validStatus.includes(status) ? status : 'pending', order_date: parseDate(get('order_date')), notes: opt('notes'), ...(clientId ? { client_id: clientId } : {}) };
+}
+
+function HygieneStat({ label, value, color }: { label: string; value: number; color: string }) {
+  return (
+    <div style={{ padding: '8px', background: '#fff', border: '1px solid #e8ebf1', borderRadius: 6 }}>
+      <div style={{ fontSize: 11, color: '#718096', textTransform: 'uppercase', letterSpacing: '0.5px' }}>{label}</div>
+      <div style={{ fontSize: 20, fontWeight: 700, color, lineHeight: 1.2 }}>{value}</div>
+    </div>
+  );
+}
+
 type RowWarning = {
   rowIndex: number;
   issues: string[];
@@ -316,7 +359,7 @@ type HygieneSummary = {
   details: RowWarning[];
 };
 
-function analyzeHygiene(target: EntityName, headers: string[], rows: string[][], mapping: Record<string, string>, existingKeys: Set<string>): HygieneSummary {
+function analyzeHygiene(target: EntityName, headers: string[], rows: string[][], mapping: Record<string, string>, existingKeys: Set<string>, getVendorCategory?: (description: string) => string | undefined): HygieneSummary {
   const required = requiredFields(target);
   const amountFields = target === 'invoices' ? ['amount'] : target === 'expenses' ? ['amount'] : ['total'];
   const dateFields = target === 'invoices' ? ['issue_date', 'due_date'] : target === 'expenses' ? ['date'] : ['order_date'];
@@ -368,7 +411,7 @@ function analyzeHygiene(target: EntityName, headers: string[], rows: string[][],
     }
 
     // Check duplicates against existing data
-    const testRecord = mapRecord(target, headers, row, mapping);
+    const testRecord = mapRecord(target, headers, row, mapping, undefined, getVendorCategory);
     if (testRecord) {
       const key = recordDuplicateKey(target, testRecord as Record<string, unknown>);
       if (existingKeys.has(key)) {
@@ -592,7 +635,7 @@ export function GoogleSheetsPage() {
       try {
         const existing = await listEntity(importTarget);
         const existingKeys = new Set(existing.map((record) => recordDuplicateKey(importTarget, record as Record<string, unknown>)));
-        const summary = analyzeHygiene(importTarget, headers, rows, mapping, existingKeys);
+        const summary = analyzeHygiene(importTarget, headers, rows, mapping, existingKeys, getVendorCategory);
         setHygieneSummary(summary);
         setShowHygieneDetails(false);
       } catch {
