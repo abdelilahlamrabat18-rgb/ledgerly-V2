@@ -1,5 +1,7 @@
 import React from 'react';
+import { Link } from 'react-router-dom';
 import { usePreferences } from '../context/PreferencesContext';
+import { BrandLogo } from '../components/BrandLogo';
 
 export function RefundPolicyPage() {
   const { language } = usePreferences();
@@ -7,14 +9,15 @@ export function RefundPolicyPage() {
   return (
     <div className="min-h-screen bg-slate-900 text-slate-100 py-12 px-4 sm:px-6 lg:px-8" dir={language === 'ar' ? 'rtl' : 'ltr'}>
       <div className="max-w-4xl mx-auto space-y-8">
-        <div>
+        <div className="flex items-center gap-2.5 mb-4">
+          <BrandLogo size={24} />
           <h1 className="text-3xl font-bold tracking-tight text-white sm:text-4xl">
             Ledgerly Refund Policy
           </h1>
-          <p className="mt-2 text-sm text-slate-400">
-            Effective date: November 24, 2026 | Last updated: November 24, 2026
-          </p>
         </div>
+        <p className="text-sm text-slate-400">
+          Effective date: November 24, 2026 | Last updated: November 24, 2026
+        </p>
 
         <section className="space-y-4">
           <h2 className="text-xl font-semibold text-white">1. Overview</h2>
@@ -119,6 +122,13 @@ export function RefundPolicyPage() {
             Refunds & Billing Support: The Ledgerly Team (support@ledgerly.app)
           </p>
         </section>
+        
+        <div className="border-t border-slate-800 pt-6">
+          <Link to="/" className="text-slate-400 hover:text-white text-sm flex items-center gap-1">
+            <BrandLogo size={14} />
+            <span>Back to Ledgerly</span>
+          </Link>
+        </div>
       </div>
     </div>
   );
