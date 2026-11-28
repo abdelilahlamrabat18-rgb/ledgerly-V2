@@ -1,17 +1,18 @@
 import { supabase, isDemoMode, isSupabaseConfigured, getSupabaseConfigurationIssue } from '../lib/supabase';
 import { userFacingError } from '../lib/errors';
 import { mockClients, mockExpenses, mockInvoices, mockOrders } from '../lib/mock-data';
-import type { Client, EntityName, Expense, GoogleConnection, Invoice, Order } from '../types';
+import type { Client, EntityName, Expense, GoogleConnection, Invoice, Order, Payment } from '../types';
 
 const demoStore: Record<EntityName, unknown[]> = {
-  clients: [...mockClients], invoices: [...mockInvoices], expenses: [...mockExpenses], orders: [...mockOrders],
+  clients: [...mockClients], invoices: [...mockInvoices], expenses: [...mockExpenses], orders: [...mockOrders], payments: [],
 };
 
 export const entityFields: Record<EntityName, string[]> = {
   clients: ['name', 'email', 'phone', 'company', 'address', 'notes'],
-  invoices: ['invoice_number', 'amount', 'status', 'issue_date', 'due_date', 'notes', 'client_id', 'client_name'],
+  invoices: ['invoice_number', 'amount', 'amount_paid', 'balance_due', 'status', 'issue_date', 'due_date', 'notes', 'client_id', 'client_name'],
   expenses: ['description', 'category', 'amount', 'date', 'notes'],
   orders: ['product', 'quantity', 'total', 'status', 'order_date', 'notes', 'client_id', 'client_name'],
+  payments: ['invoice_id', 'amount', 'payment_date', 'payment_method', 'reference', 'notes'],
 };
 
 function toDataError(error: unknown) { return new Error(userFacingError(error)); }
@@ -180,5 +181,123 @@ export async function saveConnection(payload: Record<string, unknown>) {
   }
 }
 
-export type EntityRecord = Client | Invoice | Expense | Order;
+// Payment functions
+export async function createPayment(payload: Record<string, unknown>, userId?: string): Promise<Payment> {
+  if (!requireRemote()) {
+    const item = { ...payload, id: `payment-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, user_id: userId || 'demo', created_at: new Date().toISOString(), updated_at: new Date().toISOString() };
+    demoStore.payments.unshift(item);
+    return item as Payment;
+  }
+  try {
+    const { data: authData, error: authError } = await supabase.auth.getUser();
+    if (authError) console.error('[ledgerly][payment] auth.getUser error', { error: authError });
+    const resolvedUserId = authData?.user?.id || userId;
+    if (!resolvedUserId) {
+      const err = new Error('Cannot record payment: authenticated user ID is missing. Please sign in again.');
+      console.error('[ledgerly][payment] missing user id', { userIdArg: userId, authUserId: authData?.user?.id, payload });
+      throw err;
+    }
+    const record = { ...payload, user_id: resolvedUserId };
+    const { data, error } = await supabase.from('payments').insert(record as never).select().single();
+    if (error) throw error;
+    return data as Payment;
+  } catch (error) {
+    throw toDataError(error);
+  }
+}
+
+export async function listPayments(invoiceId?: string): Promise<Payment[]> {
+  if (!requireRemote()) {
+    let payments = demoStore.payments as Payment[];
+    if (invoiceId) payments = payments.filter((p) => p.invoice_id === invoiceId);
+    return payments;
+  }
+  try {
+    let query = supabase.from('payments').select('*').order('payment_date', { ascending: false });
+    if (invoiceId) query = query.eq('invoice_id', invoiceId);
+    const { data, error } = await query;
+    if (error) throw error;
+    return (data || []) as Payment[];
+  } catch (error) {
+    throw toDataError(error);
+  }
+}
+
+export async function deletePayment(id: string) {
+  if (!requireRemote()) {
+    demoStore.payments = demoStore.payments.filter((item) => (item as { id?: string }).id !== id);
+    return;
+  }
+  try {
+    const { error } = await supabase.from('payments').delete().eq('id', id);
+    if (error) throw error;
+  } catch (error) {
+    throw toDataError(error);
+  }
+}
+
+export async function recordPaymentAndUpdateInvoice(
+  invoiceId: string,
+  paymentData: { amount: number; payment_date: string; payment_method: string; reference?: string; notes?: string },
+  userId?: string
+): Promise<{ payment: Payment; invoice: Invoice }> {
+  if (!requireRemote()) {
+    // Demo mode: create payment and update invoice
+    const payment = await createPayment({ ...paymentData, invoice_id: invoiceId }, userId);
+    
+    // Find and update the invoice
+    const invoiceIndex = demoStore.invoices.findIndex((inv) => (inv as Invoice).id === invoiceId);
+    if (invoiceIndex >= 0) {
+      const invoice = demoStore.invoices[invoiceIndex] as Invoice;
+      const newAmountPaid = (invoice.amount_paid || 0) + paymentData.amount;
+      const newBalanceDue = Math.max(0, invoice.amount - newAmountPaid);
+      let newStatus: Invoice['status'] = invoice.status;
+      if (newBalanceDue === 0) newStatus = 'paid';
+      else if (newAmountPaid > 0) newStatus = 'pending';
+      
+      demoStore.invoices[invoiceIndex] = {
+        ...invoice,
+        amount_paid: newAmountPaid,
+        balance_due: newBalanceDue,
+        status: newStatus,
+        updated_at: new Date().toISOString(),
+      };
+      return { payment, invoice: demoStore.invoices[invoiceIndex] as Invoice };
+    }
+    throw new Error('Invoice not found');
+  }
+
+  try {
+    const { data: authData, error: authError } = await supabase.auth.getUser();
+    if (authError) console.error('[ledgerly][payment] auth.getUser error', { error: authError });
+    const resolvedUserId = authData?.user?.id || userId;
+    if (!resolvedUserId) {
+      const err = new Error('Cannot record payment: authenticated user ID is missing. Please sign in again.');
+      console.error('[ledgerly][payment] missing user id', { userIdArg: userId, authUserId: authData?.user?.id, payload: paymentData });
+      throw err;
+    }
+
+    // Insert payment (trigger will update invoice balance/status)
+    const { data: payment, error: paymentError } = await supabase
+      .from('payments')
+      .insert({ ...paymentData, invoice_id: invoiceId, user_id: resolvedUserId } as never)
+      .select()
+      .single();
+    if (paymentError) throw paymentError;
+
+    // Fetch updated invoice
+    const { data: invoice, error: invoiceError } = await supabase
+      .from('invoices')
+      .select('*')
+      .eq('id', invoiceId)
+      .single();
+    if (invoiceError) throw invoiceError;
+
+    return { payment: payment as Payment, invoice: invoice as Invoice };
+  } catch (error) {
+    throw toDataError(error);
+  }
+}
+
+export type EntityRecord = Client | Invoice | Expense | Order | Payment;
 

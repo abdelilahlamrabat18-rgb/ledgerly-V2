@@ -1,5 +1,6 @@
-export type InvoiceStatus = 'draft' | 'pending' | 'paid' | 'overdue' | 'cancelled';
+export type InvoiceStatus = 'draft' | 'sent' | 'pending' | 'paid' | 'overdue' | 'cancelled';
 export type OrderStatus = 'pending' | 'processing' | 'completed' | 'cancelled';
+export type PaymentMethod = 'bank_transfer' | 'cash' | 'card' | 'check' | 'other';
 
 export interface Profile {
   id: string;
@@ -30,6 +31,8 @@ export interface Invoice {
   client_id: string | null;
   invoice_number: string;
   amount: number;
+  amount_paid: number;
+  balance_due: number;
   status: InvoiceStatus;
   issue_date: string;
   due_date: string | null;
@@ -37,6 +40,19 @@ export interface Invoice {
   created_at: string;
   updated_at: string;
   client?: Pick<Client, 'name' | 'company'> | null;
+}
+
+export interface Payment {
+  id: string;
+  user_id: string;
+  invoice_id: string;
+  amount: number;
+  payment_date: string;
+  payment_method: PaymentMethod;
+  reference: string | null;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface Expense {
@@ -77,7 +93,7 @@ export interface GoogleConnection {
   updated_at: string;
 }
 
-export type EntityName = 'clients' | 'invoices' | 'expenses' | 'orders';
+export type EntityName = 'clients' | 'invoices' | 'expenses' | 'orders' | 'payments';
 
 export type ImportFileFormat = 'csv' | 'xlsx' | 'xls' | 'json';
 

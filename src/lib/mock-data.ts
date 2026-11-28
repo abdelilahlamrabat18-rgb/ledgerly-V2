@@ -9,11 +9,11 @@ export const mockClients: Client[] = [
 ];
 
 export const mockInvoices: Invoice[] = [
-  { id: 'i1', user_id: 'demo', client_id: 'c1', invoice_number: 'INV-1048', amount: 4850, status: 'paid', issue_date: '2025-02-20', due_date: '2025-03-20', notes: null, created_at: '2025-02-20', updated_at: '2025-02-25', client: { name: 'Nora Martinez', company: 'Northstar Studio' } },
-  { id: 'i2', user_id: 'demo', client_id: 'c2', invoice_number: 'INV-1047', amount: 2750, status: 'pending', issue_date: '2025-02-18', due_date: '2025-03-18', notes: null, created_at: '2025-02-18', updated_at: '2025-02-18', client: { name: 'Marcus Lee', company: 'Fieldwork Co.' } },
-  { id: 'i3', user_id: 'demo', client_id: 'c3', invoice_number: 'INV-1046', amount: 3200, status: 'overdue', issue_date: '2025-01-30', due_date: '2025-02-28', notes: null, created_at: '2025-01-30', updated_at: '2025-02-28', client: { name: 'Aisha Patel', company: 'Apex Wellness' } },
-  { id: 'i4', user_id: 'demo', client_id: 'c4', invoice_number: 'INV-1045', amount: 1900, status: 'paid', issue_date: '2025-01-24', due_date: '2025-02-24', notes: null, created_at: '2025-01-24', updated_at: '2025-02-01', client: { name: 'Oliver Chen', company: 'Goodform Design' } },
-  { id: 'i5', user_id: 'demo', client_id: 'c5', invoice_number: 'INV-1044', amount: 1250, status: 'draft', issue_date: '2025-02-20', due_date: '2025-03-20', notes: null, created_at: '2025-02-20', updated_at: '2025-02-20', client: { name: 'Jasmine Brooks', company: 'Common Thread' } },
+  { id: 'i1', user_id: 'demo', client_id: 'c1', invoice_number: 'INV-1048', amount: 4850, amount_paid: 4850, balance_due: 0, status: 'paid', issue_date: '2025-02-20', due_date: '2025-03-20', notes: null, created_at: '2025-02-20', updated_at: '2025-02-25', client: { name: 'Nora Martinez', company: 'Northstar Studio' } },
+  { id: 'i2', user_id: 'demo', client_id: 'c2', invoice_number: 'INV-1047', amount: 2750, amount_paid: 0, balance_due: 2750, status: 'pending', issue_date: '2025-02-18', due_date: '2025-03-18', notes: null, created_at: '2025-02-18', updated_at: '2025-02-18', client: { name: 'Marcus Lee', company: 'Fieldwork Co.' } },
+  { id: 'i3', user_id: 'demo', client_id: 'c3', invoice_number: 'INV-1046', amount: 3200, amount_paid: 0, balance_due: 3200, status: 'overdue', issue_date: '2025-01-30', due_date: '2025-02-28', notes: null, created_at: '2025-01-30', updated_at: '2025-02-28', client: { name: 'Aisha Patel', company: 'Apex Wellness' } },
+  { id: 'i4', user_id: 'demo', client_id: 'c4', invoice_number: 'INV-1045', amount: 1900, amount_paid: 1900, balance_due: 0, status: 'paid', issue_date: '2025-01-24', due_date: '2025-02-24', notes: null, created_at: '2025-01-24', updated_at: '2025-02-01', client: { name: 'Oliver Chen', company: 'Goodform Design' } },
+  { id: 'i5', user_id: 'demo', client_id: 'c5', invoice_number: 'INV-1044', amount: 1250, amount_paid: 0, balance_due: 1250, status: 'draft', issue_date: '2025-02-20', due_date: '2025-03-20', notes: null, created_at: '2025-02-20', updated_at: '2025-02-20', client: { name: 'Jasmine Brooks', company: 'Common Thread' } },
 ];
 
 export const mockExpenses: Expense[] = [

@@ -27,6 +27,7 @@ const TEMPLATE_HEADERS: Record<EntityName, string[]> = {
   invoices: ['invoice_number', 'client_id', 'client_name', 'amount', 'status', 'issue_date', 'due_date', 'notes'],
   expenses: ['description', 'category', 'amount', 'date', 'notes'],
   orders: ['product', 'client_id', 'client_name', 'quantity', 'total', 'status', 'order_date', 'notes'],
+  payments: ['invoice_id', 'amount', 'payment_date', 'payment_method', 'reference', 'notes'],
 };
 
 const TEMPLATE_SAMPLE_ROWS: Record<EntityName, string[][]> = {
@@ -45,6 +46,10 @@ const TEMPLATE_SAMPLE_ROWS: Record<EntityName, string[][]> = {
   orders: [
     ['Website Redesign', '', 'Acme Corporation', '1', '5000.00', 'completed', '2024-01-20', 'Phase 1 delivery'],
     ['SEO Optimization', '', 'Globex Inc', '3', '1500.00', 'processing', '2024-02-15', 'Monthly retainer x3'],
+  ],
+  payments: [
+    ['INV-1001', '2500.00', '2024-02-01', 'bank_transfer', 'TXN-001', 'Payment for web design'],
+    ['INV-1002', '500.00', '2024-02-15', 'card', 'TXN-002', 'Partial payment'],
   ],
 };
 

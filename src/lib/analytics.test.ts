@@ -5,10 +5,10 @@ import { summariseInvoiceMetrics } from './analytics';
 describe('summariseInvoiceMetrics', () => {
   it('counts only truly paid invoices toward revenue and keeps outstanding totals separate', () => {
     const invoices: Invoice[] = [
-      { id: '1', user_id: 'u1', client_id: 'c1', invoice_number: 'INV-100', amount: 1000, status: 'paid', issue_date: '2026-01-01', due_date: '2026-01-15', notes: null, created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z' },
-      { id: '2', user_id: 'u1', client_id: 'c1', invoice_number: 'INV-101', amount: 1200, status: 'pending', issue_date: '2026-02-01', due_date: '2026-02-15', notes: null, created_at: '2026-02-01T00:00:00Z', updated_at: '2026-02-01T00:00:00Z' },
-      { id: '3', user_id: 'u1', client_id: 'c1', invoice_number: 'INV-102', amount: 1500, status: 'overdue', issue_date: '2026-01-10', due_date: '2026-01-20', notes: null, created_at: '2026-01-10T00:00:00Z', updated_at: '2026-01-10T00:00:00Z' },
-      { id: '4', user_id: 'u1', client_id: 'c1', invoice_number: 'INV-103', amount: 500, status: 'cancelled', issue_date: '2026-03-01', due_date: '2026-03-15', notes: null, created_at: '2026-03-01T00:00:00Z', updated_at: '2026-03-01T00:00:00Z' },
+      { id: '1', user_id: 'u1', client_id: 'c1', invoice_number: 'INV-100', amount: 1000, amount_paid: 1000, balance_due: 0, status: 'paid', issue_date: '2026-01-01', due_date: '2026-01-15', notes: null, created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z' },
+      { id: '2', user_id: 'u1', client_id: 'c1', invoice_number: 'INV-101', amount: 1200, amount_paid: 0, balance_due: 1200, status: 'pending', issue_date: '2026-02-01', due_date: '2026-02-15', notes: null, created_at: '2026-02-01T00:00:00Z', updated_at: '2026-02-01T00:00:00Z' },
+      { id: '3', user_id: 'u1', client_id: 'c1', invoice_number: 'INV-102', amount: 1500, amount_paid: 0, balance_due: 1500, status: 'overdue', issue_date: '2026-01-10', due_date: '2026-01-20', notes: null, created_at: '2026-01-10T00:00:00Z', updated_at: '2026-01-10T00:00:00Z' },
+      { id: '4', user_id: 'u1', client_id: 'c1', invoice_number: 'INV-103', amount: 500, amount_paid: 0, balance_due: 500, status: 'cancelled', issue_date: '2026-03-01', due_date: '2026-03-15', notes: null, created_at: '2026-03-01T00:00:00Z', updated_at: '2026-03-01T00:00:00Z' },
     ];
 
     const summary = summariseInvoiceMetrics(invoices);
@@ -23,8 +23,8 @@ describe('summariseInvoiceMetrics', () => {
 
   it('ignores invalid values and keeps missing data explicit', () => {
     const invoices: Invoice[] = [
-      { id: 'invalid', user_id: 'u1', client_id: 'c1', invoice_number: 'INV-999', amount: Number.NaN, status: 'paid', issue_date: 'bad-date', due_date: null, notes: null, created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z' },
-      { id: 'valid', user_id: 'u1', client_id: 'c1', invoice_number: 'INV-200', amount: 200, status: 'paid', issue_date: '2026-04-01', due_date: '2026-04-15', notes: null, created_at: '2026-04-01T00:00:00Z', updated_at: '2026-04-01T00:00:00Z' },
+      { id: 'invalid', user_id: 'u1', client_id: 'c1', invoice_number: 'INV-999', amount: Number.NaN, amount_paid: 0, balance_due: Number.NaN, status: 'paid', issue_date: 'bad-date', due_date: null, notes: null, created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z' },
+      { id: 'valid', user_id: 'u1', client_id: 'c1', invoice_number: 'INV-200', amount: 200, amount_paid: 0, balance_due: 200, status: 'paid', issue_date: '2026-04-01', due_date: '2026-04-15', notes: null, created_at: '2026-04-01T00:00:00Z', updated_at: '2026-04-01T00:00:00Z' },
     ];
 
     const summary = summariseInvoiceMetrics(invoices);
